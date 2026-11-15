@@ -9,14 +9,14 @@ cd C:\path\to\hollowrun
 ## Install dependencies
 
 ```powershell
-npm ci
-npm run setup
+npm.cmd ci
+npm.cmd run setup
 ```
 
 ## Build the installer and portable executable
 
 ```powershell
-npm run build
+npm.cmd run build
 ```
 
 Output:
@@ -31,8 +31,8 @@ dist-electron\HollowRun Setup <version>.exe
 Build the frontend once, then start Electron:
 
 ```powershell
-npm run build:frontend
-npm start
+npm.cmd run build:frontend
+npm.cmd start
 ```
 
 ## Verify changes
@@ -40,8 +40,8 @@ npm start
 Run the automated JavaScript tests and frontend lint checks:
 
 ```powershell
-npm test
-npm run lint
+npm.cmd test
+npm.cmd run lint
 ```
 
 Compile both native projects without publishing release artifacts:
@@ -57,9 +57,9 @@ Use one of the synchronized version commands. Each updates the root, backend,
 frontend, lockfiles, worker, and splash project versions:
 
 ```powershell
-npm run version:patch
-npm run version:minor
-npm run version:major
+npm.cmd run version:patch
+npm.cmd run version:minor
+npm.cmd run version:major
 ```
 
 ## Optional Sentry source maps
