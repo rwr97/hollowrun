@@ -80,5 +80,9 @@
   },
   "dependencies": {
     "@sentry/electron": "^7.17.0"
+  },
+  "allowScripts": {
+    "@sentry/cli@2.58.6": true,
+    "electron-winstaller@5.4.0": true
   }
 }
