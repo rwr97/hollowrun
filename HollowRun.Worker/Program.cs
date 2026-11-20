@@ -45,6 +45,46 @@ namespace HollowRun.Worker
                 return;
             }
 
+            if (args.Length > 0 && args[0] == "--achievement-summary")
+            {
+                GetAchievementSummary(
+                    args.Length > 1 ? args[1] : null,
+                    args.Length > 2 && uint.TryParse(args[2], out uint achievementAppId) ? achievementAppId : 0
+                );
+                return;
+            }
+
+            if (args.Length > 0 && args[0] == "--set-achievement")
+            {
+                SetAchievementState(
+                    args.Length > 1 ? args[1] : null,
+                    args.Length > 2 && uint.TryParse(args[2], out uint achievementAppId) ? achievementAppId : 0,
+                    args.Length > 3 ? args[3] : null,
+                    args.Length > 4 ? args[4] : null
+                );
+                return;
+            }
+
+            if (args.Length > 0 && args[0] == "--set-all-achievements")
+            {
+                SetAllAchievementStates(
+                    args.Length > 1 ? args[1] : null,
+                    args.Length > 2 && uint.TryParse(args[2], out uint achievementAppId) ? achievementAppId : 0,
+                    args.Length > 3 ? args[3] : null
+                );
+                return;
+            }
+
+            if (args.Length > 0 && args[0] == "--achievement-icon")
+            {
+                GetAchievementIcon(
+                    args.Length > 1 ? args[1] : null,
+                    args.Length > 2 && uint.TryParse(args[2], out uint achievementAppId) ? achievementAppId : 0,
+                    args.Length > 3 ? args[3] : null
+                );
+                return;
+            }
+
             if (args.Length > 0 && args[0] == "--verify-library")
             {
                 VerifyLibraryOwnership(args.Length > 1 ? args[1] : null);
@@ -300,6 +340,251 @@ namespace HollowRun.Worker
                     reason = "unavailable"
                 }));
             }
+        }
+
+        private static void GetAchievementSummary(string? expectedSteamId, uint appId)
+        {
+            try
+            {
+                if (!IsValidSteamId(expectedSteamId) || appId <= 10)
+                {
+                    Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "unavailable" }));
+                    return;
+                }
+
+                // Steam Community's HTML does not consistently contain the
+                // achievement total (notably for Counter-Strike 2). Query the
+                // local Steam client instead, just as the game itself does.
+                ConfigureSteamApp(appId);
+                SteamClient.Init(appId);
+                if (!SteamClient.IsValid || SteamClient.SteamId.Value.ToString() != expectedSteamId)
+                {
+                    Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "unavailable" }));
+                    return;
+                }
+
+                SteamUserStats.RequestCurrentStats();
+                // Stats arrive asynchronously through Steam callbacks. Give
+                // the active client a bounded opportunity to populate them.
+                for (int attempt = 0; attempt < 40 && !SteamUserStats.StatsRecieved; attempt++)
+                {
+                    SteamClient.RunCallbacks();
+                    Thread.Sleep(100);
+                }
+                var achievements = SteamUserStats.Achievements.ToArray();
+
+                Console.WriteLine(JsonSerializer.Serialize(new {
+                    success = true,
+                    steamId = expectedSteamId,
+                    appId,
+                    unlocked = achievements.Count(achievement => achievement.State),
+                    total = achievements.Length,
+                    achievements = achievements.Select(achievement => new {
+                        id = achievement.Identifier,
+                        name = achievement.Name,
+                        description = achievement.Description,
+                        unlocked = achievement.State
+                    }).ToArray()
+                }));
+            }
+            catch
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "unavailable" }));
+            }
+            finally
+            {
+                TryShutdownSteam();
+            }
+        }
+
+        private static void SetAchievementState(string? expectedSteamId, uint appId, string? achievementId, string? action)
+        {
+            try
+            {
+                if (!IsValidSteamId(expectedSteamId) || appId <= 10
+                    || string.IsNullOrWhiteSpace(achievementId) || achievementId.Length > 256
+                    || (action != "unlock" && action != "lock"))
+                {
+                    Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "invalid-request" }));
+                    return;
+                }
+
+                ConfigureSteamApp(appId);
+                SteamClient.Init(appId);
+                if (!SteamClient.IsValid || SteamClient.SteamId.Value.ToString() != expectedSteamId)
+                {
+                    Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "unavailable" }));
+                    return;
+                }
+
+                for (int attempt = 0; attempt < 40 && !SteamUserStats.StatsRecieved; attempt++)
+                {
+                    SteamClient.RunCallbacks();
+                    Thread.Sleep(100);
+                }
+
+                var achievement = SteamUserStats.Achievements
+                    .FirstOrDefault(item => string.Equals(item.Identifier, achievementId, StringComparison.Ordinal));
+                if (string.IsNullOrEmpty(achievement.Identifier))
+                {
+                    Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "not-found" }));
+                    return;
+                }
+
+                bool changed = action == "unlock" ? achievement.Trigger(false) : achievement.Clear();
+                bool stored = changed && SteamUserStats.StoreStats();
+                Console.WriteLine(JsonSerializer.Serialize(new {
+                    success = changed && stored,
+                    steamId = expectedSteamId,
+                    appId,
+                    achievementId,
+                    action
+                }));
+            }
+            catch
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "unavailable" }));
+            }
+            finally
+            {
+                TryShutdownSteam();
+            }
+        }
+
+        private static void SetAllAchievementStates(string? expectedSteamId, uint appId, string? action)
+        {
+            try
+            {
+                if (!IsValidSteamId(expectedSteamId) || appId <= 10 || (action != "unlock" && action != "lock"))
+                {
+                    Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "invalid-request" }));
+                    return;
+                }
+                ConfigureSteamApp(appId);
+                SteamClient.Init(appId);
+                if (!SteamClient.IsValid || SteamClient.SteamId.Value.ToString() != expectedSteamId)
+                {
+                    Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "unavailable" }));
+                    return;
+                }
+                for (int attempt = 0; attempt < 40 && !SteamUserStats.StatsRecieved; attempt++)
+                {
+                    SteamClient.RunCallbacks();
+                    Thread.Sleep(100);
+                }
+
+                var achievements = SteamUserStats.Achievements.ToArray();
+                int changed = 0;
+                foreach (var achievement in achievements)
+                {
+                    bool needsChange = action == "unlock" ? !achievement.State : achievement.State;
+                    if (needsChange && (action == "unlock" ? achievement.Trigger(false) : achievement.Clear())) changed++;
+                }
+                bool stored = changed == 0 || SteamUserStats.StoreStats();
+                Console.WriteLine(JsonSerializer.Serialize(new {
+                    success = stored,
+                    steamId = expectedSteamId,
+                    appId,
+                    action,
+                    changed
+                }));
+            }
+            catch
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "unavailable" }));
+            }
+            finally
+            {
+                TryShutdownSteam();
+            }
+        }
+
+        private static void GetAchievementIcon(string? expectedSteamId, uint appId, string? achievementId)
+        {
+            try
+            {
+                if (!IsValidSteamId(expectedSteamId) || appId <= 10
+                    || string.IsNullOrWhiteSpace(achievementId) || achievementId.Length > 256)
+                {
+                    Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "invalid-request" }));
+                    return;
+                }
+                ConfigureSteamApp(appId);
+                SteamClient.Init(appId);
+                if (!SteamClient.IsValid || SteamClient.SteamId.Value.ToString() != expectedSteamId)
+                {
+                    Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "unavailable" }));
+                    return;
+                }
+                for (int attempt = 0; attempt < 40 && !SteamUserStats.StatsRecieved; attempt++)
+                {
+                    SteamClient.RunCallbacks();
+                    Thread.Sleep(100);
+                }
+                var achievement = SteamUserStats.Achievements
+                    .FirstOrDefault(item => string.Equals(item.Identifier, achievementId, StringComparison.Ordinal));
+                if (string.IsNullOrEmpty(achievement.Identifier))
+                {
+                    Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "not-found" }));
+                    return;
+                }
+                // The first GetIcon call can start an asynchronous Steam image
+                // download. Keep pumping callbacks so the first dashboard visit
+                // receives the icon instead of requiring a second visit.
+                var image = achievement.GetIcon();
+                for (int attempt = 0; image is null && attempt < 50; attempt++)
+                {
+                    SteamClient.RunCallbacks();
+                    Thread.Sleep(100);
+                    image = achievement.GetIcon();
+                }
+                if (image is null || image.Value.Width == 0 || image.Value.Height == 0
+                    || image.Value.Data is null || image.Value.Data.Length != image.Value.Width * image.Value.Height * 4)
+                {
+                    Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "unavailable" }));
+                    return;
+                }
+                byte[] bitmap = ToBitmap(image.Value.Data, image.Value.Width, image.Value.Height);
+                Console.WriteLine(JsonSerializer.Serialize(new {
+                    success = true,
+                    steamId = expectedSteamId,
+                    appId,
+                    achievementId,
+                    image = Convert.ToBase64String(bitmap)
+                }));
+            }
+            catch
+            {
+                Console.WriteLine(JsonSerializer.Serialize(new { success = false, reason = "unavailable" }));
+            }
+            finally
+            {
+                TryShutdownSteam();
+            }
+        }
+
+        private static byte[] ToBitmap(byte[] rgba, uint width, uint height)
+        {
+            int pixelBytes = checked((int)(width * height * 4));
+            byte[] bitmap = new byte[54 + pixelBytes];
+            bitmap[0] = (byte)'B';
+            bitmap[1] = (byte)'M';
+            BitConverter.GetBytes(bitmap.Length).CopyTo(bitmap, 2);
+            BitConverter.GetBytes(54).CopyTo(bitmap, 10);
+            BitConverter.GetBytes(40).CopyTo(bitmap, 14);
+            BitConverter.GetBytes((int)width).CopyTo(bitmap, 18);
+            BitConverter.GetBytes(-(int)height).CopyTo(bitmap, 22);
+            BitConverter.GetBytes((short)1).CopyTo(bitmap, 26);
+            BitConverter.GetBytes((short)32).CopyTo(bitmap, 28);
+            BitConverter.GetBytes(pixelBytes).CopyTo(bitmap, 34);
+            for (int index = 0; index < pixelBytes; index += 4)
+            {
+                bitmap[54 + index] = rgba[index + 2];
+                bitmap[54 + index + 1] = rgba[index + 1];
+                bitmap[54 + index + 2] = rgba[index];
+                bitmap[54 + index + 3] = rgba[index + 3];
+            }
+            return bitmap;
         }
 
         private static void ScanCardDrops(string? expectedSteamId)

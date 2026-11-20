@@ -12,6 +12,8 @@ HollowRun is a Windows desktop application for managing local Steam idling sessi
 - Refreshes card-drop results on demand while keeping the current results visible during a scan.
 - Runs the card-drop queue sequentially or starts up to Steam's 32-AppID limit together; later overflow stays queued.
 - Shows total Steam playtime alongside the current session timer for running games.
+- Includes an Achievement Manager that reads achievement progress and icons through the active Steam client, with individual and bulk edit controls, local watched games, and ranking-site risk warnings.
+- Lets you save account-local Favorite Games from any game section with a right-click, then browse them from the dedicated Favorite Games section.
 - Provides an opt-in custom "In-Game" status through a managed hidden Steam shortcut.
 - Displays the active account's current public avatar, full or animated background, animated mini-profile background, and animated avatar frame when available.
 - Provides an opt-in, disabled-by-default crash reporter with privacy-filtered diagnostics.

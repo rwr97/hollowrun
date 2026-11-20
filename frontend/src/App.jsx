@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   Gamepad2, CheckSquare, UserCircle, Activity, Clock, ListChecks, Zap, Hexagon, Search,
   Square, X, History, ListPlus, Play, CreditCard, ChevronUp, MessageSquareText,
-  RotateCw, Settings as SettingsIcon
+  RotateCw, Settings as SettingsIcon, Trophy, ShieldAlert, Pin, PinOff, LockKeyhole, LockOpen, Star
 } from 'lucide-react';
 import {
   formatDropsLeft,
@@ -34,6 +34,8 @@ const BULK_QUEUE_CARD_DROP_REFRESH_INTERVAL_MS = 120000;
 const RUNNING_CARD_DROP_CHECK_CONCURRENCY = 4;
 const MAX_CONCURRENT_CARD_GAMES = 32;
 const TASK_QUEUE_STORAGE_PREFIX = 'hollowrun.taskQueue';
+const ACHIEVEMENT_WATCHLIST_STORAGE_PREFIX = 'hollowrun.achievementWatchlist';
+const FAVORITE_GAMES_STORAGE_PREFIX = 'hollowrun.favoriteGames';
 
 async function requestJson(path, options) {
   const response = await fetch(`${API_BASE}${path}`, options);
@@ -97,11 +99,42 @@ function readStoredTaskQueue(steamId) {
   }
 }
 
+function readAchievementWatchlist(steamId) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(`${ACHIEVEMENT_WATCHLIST_STORAGE_PREFIX}.${steamId}`) || '[]');
+    return Array.from(new Set((Array.isArray(stored) ? stored : [])
+      .map(Number)
+      .filter(appId => Number.isSafeInteger(appId) && appId > 10)));
+  } catch {
+    return [];
+  }
+}
+
+function readFavoriteGames(steamId) {
+  try {
+    const stored = JSON.parse(localStorage.getItem(`${FAVORITE_GAMES_STORAGE_PREFIX}.${steamId}`) || '[]');
+    return Array.from(new Set((Array.isArray(stored) ? stored : [])
+      .map(Number)
+      .filter(appId => Number.isSafeInteger(appId) && appId > 10)));
+  } catch {
+    return [];
+  }
+}
+
 export default function App() {
   const [status, setStatus] = useState(null);
   const [games, setGames] = useState({ installed: [], libraryStats: null });
   const [sessions, setSessions] = useState([]);
   const [activeTab, setActiveTab] = useState('installed');
+  const [achievementSearchQuery, setAchievementSearchQuery] = useState('');
+  const [achievementPickerTab, setAchievementPickerTab] = useState('all');
+  const [isAchievementEditMode, setIsAchievementEditMode] = useState(false);
+  const [selectedAchievementGame, setSelectedAchievementGame] = useState(null);
+  const [achievementSummary, setAchievementSummary] = useState({ status: 'idle', data: null });
+  const [achievementWatchlist, setAchievementWatchlist] = useState([]);
+  const [favoriteGames, setFavoriteGames] = useState([]);
+  const [achievementPendingId, setAchievementPendingId] = useState(null);
+  const [achievementBulkPending, setAchievementBulkPending] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [storeSearchResults, setStoreSearchResults] = useState([]);
   const [isStoreSearchPending, setIsStoreSearchPending] = useState(false);
@@ -333,6 +366,119 @@ export default function App() {
   }, [isProfileMenuOpen]);
 
   const activeSteamId = status?.activeUser?.steamId;
+
+  useEffect(() => {
+    setAchievementWatchlist(/^7656\d{13}$/.test(String(activeSteamId || ''))
+      ? readAchievementWatchlist(activeSteamId)
+      : []);
+    setFavoriteGames(/^7656\d{13}$/.test(String(activeSteamId || ''))
+      ? readFavoriteGames(activeSteamId)
+      : []);
+    setSelectedAchievementGame(null);
+    setAchievementSummary({ status: 'idle', data: null });
+  }, [activeSteamId]);
+
+  useEffect(() => {
+    if (!activeSteamId) return;
+    try {
+      localStorage.setItem(
+        `${ACHIEVEMENT_WATCHLIST_STORAGE_PREFIX}.${activeSteamId}`,
+        JSON.stringify(achievementWatchlist)
+      );
+    } catch {
+      // The watchlist remains available for this session if storage is unavailable.
+    }
+  }, [achievementWatchlist, activeSteamId]);
+
+  useEffect(() => {
+    if (!activeSteamId) return;
+    try {
+      localStorage.setItem(`${FAVORITE_GAMES_STORAGE_PREFIX}.${activeSteamId}`, JSON.stringify(favoriteGames));
+    } catch {
+      // Favorites remain available for this session if storage is unavailable.
+    }
+  }, [favoriteGames, activeSteamId]);
+
+  const openAchievementGame = async game => {
+    if (!game) return;
+    setSelectedAchievementGame(game);
+    setAchievementSummary({ status: 'loading', data: null });
+    try {
+      const result = await requestJson(`/achievements/${game.appid}`);
+      setAchievementSummary({ status: 'ready', data: result });
+    } catch {
+      setAchievementSummary({ status: 'unavailable', data: null });
+    }
+  };
+
+  const toggleAchievementWatchlist = appId => {
+    setAchievementWatchlist(previous => previous.includes(appId)
+      ? previous.filter(id => id !== appId)
+      : [...previous, appId]);
+  };
+
+  const toggleFavoriteGame = appId => {
+    setFavoriteGames(previous => previous.includes(appId)
+      ? previous.filter(id => id !== appId)
+      : [...previous, appId]);
+  };
+
+  const handleAchievementStateChange = async (achievementId, action) => {
+    if (!selectedAchievementGame || achievementPendingId) return;
+    const label = action === 'unlock' ? 'unlock' : 'lock';
+    if (!window.confirm(`Are you sure you want to ${label} this achievement in Steam?`)) return;
+    setAchievementPendingId(achievementId);
+    try {
+      await requestJson(`/achievements/${selectedAchievementGame.appid}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ achievementId, action })
+      });
+      setAchievementSummary(previous => {
+        if (!previous.data) return previous;
+        const achievements = (previous.data.achievements || []).map(achievement => (
+          achievement.id === achievementId ? { ...achievement, unlocked: action === 'unlock' } : achievement
+        ));
+        const unlocked = achievements.filter(achievement => achievement.unlocked).length;
+        const total = Number(previous.data.total) || achievements.length;
+        return { ...previous, data: { ...previous.data, achievements, unlocked, percent: total > 0 ? Math.round((unlocked / total) * 100) : 0 } };
+      });
+    } catch (error) {
+      setErrorMessage(`Could not ${label} this achievement: ${error.message}`);
+    } finally {
+      setAchievementPendingId(null);
+    }
+  };
+
+  const handleAllAchievementStates = async action => {
+    if (!selectedAchievementGame || achievementBulkPending || achievementPendingId) return;
+    const label = action === 'unlock' ? 'unlock every achievement' : 'lock every achievement';
+    if (!window.confirm(`Are you sure you want to ${label} for ${getDisplayGameName(selectedAchievementGame)} in Steam?`)) return;
+    setAchievementBulkPending(true);
+    try {
+      await requestJson(`/achievements/${selectedAchievementGame.appid}/all`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action })
+      });
+      setAchievementSummary(previous => {
+        if (!previous.data) return previous;
+        const achievements = (previous.data.achievements || []).map(achievement => ({
+          ...achievement, unlocked: action === 'unlock'
+        }));
+        const unlocked = action === 'unlock' ? achievements.length : 0;
+        const total = Number(previous.data.total) || achievements.length;
+        return {
+          ...previous,
+          data: { ...previous.data, achievements, unlocked, percent: action === 'unlock' && total > 0 ? 100 : 0 }
+        };
+      });
+    } catch (error) {
+      setErrorMessage(`Could not ${action} all achievements: ${error.message}`);
+    } finally {
+      setAchievementBulkPending(false);
+    }
+  };
 
   const fetchCardDrops = useCallback(async ({ force = false, quiet = false } = {}) => {
     const steamId = String(activeSteamId || '');
@@ -1113,7 +1259,18 @@ export default function App() {
 
   const normalizedQuery = searchQuery.trim().toLowerCase();
   const isSettingsView = activeTab === 'settings';
-  const isSearching = !isSettingsView && normalizedQuery.length > 0;
+  const isAchievementsView = activeTab === 'achievements';
+  const normalizedAchievementQuery = achievementSearchQuery.trim().toLowerCase();
+  const achievementGames = normalizedAchievementQuery
+    ? allGames.filter(game => (
+      String(game.name || '').toLowerCase().includes(normalizedAchievementQuery)
+      || String(game.appid || '').includes(normalizedAchievementQuery)
+    ))
+    : allGames;
+  const visibleAchievementGames = achievementPickerTab === 'watched'
+    ? achievementGames.filter(game => achievementWatchlist.includes(game.appid))
+    : achievementGames;
+  const isSearching = !isSettingsView && !isAchievementsView && normalizedQuery.length > 0;
   const tabGames = activeTab === 'installed'
     ? allGames.filter(game => game.installed)
     : activeTab === 'cards'
@@ -1123,6 +1280,8 @@ export default function App() {
         .filter(game => getLastPlayedTime(game) > 0)
         .sort((left, right) => getLastPlayedTime(right) - getLastPlayedTime(left))
         .slice(0, MAX_RECENT_GAMES)
+    : activeTab === 'favorites'
+      ? allGames.filter(game => favoriteGames.includes(game.appid))
       : allGames;
   const searchScopeGames = activeTab === 'cards' ? cardDropGames : allGames;
   const localSearchMatches = isSearching
@@ -1221,6 +1380,8 @@ export default function App() {
       library: 'Library',
       cards: 'Games With Cards',
       recent: 'Recent Games',
+      favorites: 'Favorite Games',
+      achievements: 'Achievement Manager',
       settings: 'Settings'
     }[activeTab] || 'Library');
   const cardEmptyMessage = cardDrops.status === 'loading'
@@ -1321,6 +1482,14 @@ export default function App() {
           <button type="button" className={`nav-item ${activeTab === 'recent' ? 'active' : ''}`} onClick={() => setActiveTab('recent')}>
             <History size={18} className="nav-icon" />
             <span>Recent Games</span>
+          </button>
+          <button type="button" className={`nav-item ${activeTab === 'favorites' ? 'active' : ''}`} onClick={() => setActiveTab('favorites')}>
+            <Star size={18} className="nav-icon" />
+            <span>Favorite Games</span>
+          </button>
+          <button type="button" className={`nav-item ${activeTab === 'achievements' ? 'active' : ''}`} onClick={() => setActiveTab('achievements')}>
+            <Trophy size={18} className="nav-icon" />
+            <span>Achievements</span>
           </button>
           <button type="button" className={`nav-item nav-settings ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>
             <SettingsIcon size={18} className="nav-icon" />
@@ -1496,12 +1665,16 @@ export default function App() {
             <div className="page-subtitle">
               {isSettingsView ? (
                 <>Privacy, diagnostics, and application preferences</>
+              ) : isAchievementsView ? (
+                <>Manage Steam achievements and keep a local watchlist.</>
               ) : isSearching ? (
                 <>{activeTab === 'cards' ? 'Within Games With Cards' : 'Across all game sections'} <span className="highlight">{isStoreSearchPending ? 'Checking Steam titles...' : `${filteredGames.length} games.`}</span></>
               ) : activeTab === 'cards' ? (
                 <>Live Steam client card drops {cardDropSummary && <span className="highlight">{cardDropSummary}</span>}</>
               ) : activeTab === 'recent' ? (
                 <>Newest local Steam play history <span className="highlight">{filteredGames.length} games.</span></>
+              ) : activeTab === 'favorites' ? (
+                <>Your locally saved favorites <span className="highlight">{filteredGames.length} games.</span></>
               ) : (
                 <>Local Steam activity <span className="highlight">{sessions.length} games running.</span></>
               )}
@@ -1524,6 +1697,147 @@ export default function App() {
             onTestReport={handleTestCrashReport}
             testReportsAvailable={window.hollowrun?.testReportsAvailable === true}
           />
+        ) : isAchievementsView ? (
+          <section className="achievements-page" aria-label="Achievement manager">
+            <div className="ranking-warning" role="alert">
+              <ShieldAlert size={22} aria-hidden="true" />
+              <div>
+                <strong>Ranking-site safety notice</strong>
+                <p>Unlocking, relocking, or editing achievements with third-party tools can cause your profile to be flagged or banned by achievement-ranking websites. Only enter edit mode if you understand that risk.</p>
+              </div>
+              <button
+                type="button"
+                className={`achievement-edit-mode-btn ${isAchievementEditMode ? 'active' : ''}`}
+                onClick={() => setIsAchievementEditMode(previous => !previous)}
+                aria-pressed={isAchievementEditMode}
+              >
+                {isAchievementEditMode ? 'Exit edit mode' : 'Enter edit mode'}
+              </button>
+            </div>
+
+            <div className="games-search-wrap achievement-search-wrap" role="search">
+              <div className="search-box games-search-box">
+                <Search className="search-icon" aria-hidden="true" />
+                <input
+                  type="search"
+                  aria-label="Search achievement games by name or AppID"
+                  placeholder="Search by game name or AppID..."
+                  value={achievementSearchQuery}
+                  onChange={event => setAchievementSearchQuery(event.target.value)}
+                />
+                {achievementSearchQuery && (
+                  <button type="button" className="search-clear" aria-label="Clear achievement search" onClick={() => setAchievementSearchQuery('')}>
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+            </div>
+
+            <div className="achievement-layout">
+              <section className="achievement-picker">
+                <div className="section-header">
+                  <div className="section-title"><Trophy size={18} /> Choose a game <span className="badge">{visibleAchievementGames.length}</span></div>
+                </div>
+                <div className="achievement-picker-tabs" role="tablist" aria-label="Achievement game lists">
+                  <button type="button" role="tab" aria-selected={achievementPickerTab === 'all'} className={achievementPickerTab === 'all' ? 'active' : ''} onClick={() => setAchievementPickerTab('all')}>All</button>
+                  <button type="button" role="tab" aria-selected={achievementPickerTab === 'watched'} className={achievementPickerTab === 'watched' ? 'active' : ''} onClick={() => setAchievementPickerTab('watched')}><Pin size={12} /> Watched <span>{achievementWatchlist.length}</span></button>
+                </div>
+                <p className="achievement-watch-hint"><Pin size={12} /> Right-click a game to add or remove it from Watched.</p>
+                <div className="achievement-game-list">
+                  {visibleAchievementGames.length === 0 && (
+                    <div className="achievement-no-results">{achievementPickerTab === 'watched' ? 'No watched games match this search.' : 'No games match this search.'}</div>
+                  )}
+                  {visibleAchievementGames.map(game => {
+                    const pinned = achievementWatchlist.includes(game.appid);
+                    return (
+                      <button
+                        type="button"
+                        key={game.appid}
+                        className={`achievement-game-row ${selectedAchievementGame?.appid === game.appid ? 'selected' : ''}`}
+                        title={`${pinned ? 'Remove from' : 'Add to'} watched games (right-click)`}
+                        onClick={() => openAchievementGame(game)}
+                        onContextMenu={event => {
+                          event.preventDefault();
+                          toggleAchievementWatchlist(game.appid);
+                        }}
+                      >
+                        <GameIcon appId={game.appid} name={getDisplayGameName(game)} />
+                        <span className="achievement-game-name">{getDisplayGameName(game)}</span>
+                        {pinned && <Pin size={14} className="achievement-pin" aria-label="On watchlist" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+
+              <section className="achievement-detail" aria-live="polite">
+                {!selectedAchievementGame ? (
+                  <div className="achievement-placeholder"><Trophy size={30} /><strong>Select a game</strong><span>HollowRun will read achievement progress from the running Steam client.</span></div>
+                ) : (
+                  <>
+                    <div className="achievement-detail-header">
+                      <div><span className={`achievement-kicker ${isAchievementEditMode ? 'edit-mode' : ''}`}>{isAchievementEditMode ? 'Edit mode' : 'Steam client progress'}</span><h2>{getDisplayGameName(selectedAchievementGame)}</h2></div>
+                      <button type="button" className="achievement-watch-btn" onClick={() => toggleAchievementWatchlist(selectedAchievementGame.appid)}>
+                        {achievementWatchlist.includes(selectedAchievementGame.appid) ? <><PinOff size={15} /> Remove watch</> : <><Pin size={15} /> Watch game</>}
+                      </button>
+                    </div>
+                    {isAchievementEditMode && achievementSummary.status === 'ready' && (
+                      <div className="achievement-bulk-actions">
+                        <span>All achievements</span>
+                        <button type="button" className="achievement-state-btn unlock" disabled={achievementBulkPending || achievementPendingId !== null} onClick={() => handleAllAchievementStates('unlock')}><LockOpen size={14} /> {achievementBulkPending ? 'Applying…' : 'Unlock all'}</button>
+                        <button type="button" className="achievement-state-btn lock" disabled={achievementBulkPending || achievementPendingId !== null} onClick={() => handleAllAchievementStates('lock')}><LockKeyhole size={14} /> {achievementBulkPending ? 'Applying…' : 'Lock all'}</button>
+                      </div>
+                    )}
+                    {achievementSummary.status === 'loading' && <div className="achievement-loading">Reading achievement progress from Steam Community…</div>}
+                    {achievementSummary.status === 'ready' && (
+                      <>
+                        <div className="achievement-progress-card">
+                          <span>Achievements unlocked</span>
+                          <strong>{achievementSummary.data.unlocked} <em>/ {achievementSummary.data.total}</em></strong>
+                          <div className="achievement-progress-track"><span style={{ width: `${achievementSummary.data.percent}%` }} /></div>
+                          <small>{achievementSummary.data.percent}% complete</small>
+                        </div>
+                        <div className="achievement-items" aria-label="Game achievements">
+                          {(achievementSummary.data.achievements || []).map(achievement => (
+                            <article key={achievement.id} className={`achievement-item ${achievement.unlocked ? 'unlocked' : 'locked'}`}>
+                              <span className="achievement-state-icon" aria-hidden="true">
+                                {achievement.unlocked ? <LockOpen size={16} /> : <LockKeyhole size={16} />}
+                                <img
+                                  className="achievement-icon"
+                                  src={`/api/achievements/${selectedAchievementGame.appid}/icon/${encodeURIComponent(achievement.id)}`}
+                                  alt=""
+                                  loading="lazy"
+                                  onError={event => { event.currentTarget.style.display = 'none'; }}
+                                />
+                              </span>
+                              <div className="achievement-item-copy">
+                                <strong>{achievement.name}</strong>
+                                {achievement.description && <span>{achievement.description}</span>}
+                                <code>{achievement.id}</code>
+                              </div>
+                              {isAchievementEditMode && (
+                                <button
+                                  type="button"
+                                  className={`achievement-state-btn ${achievement.unlocked ? 'lock' : 'unlock'}`}
+                                  disabled={achievementPendingId !== null}
+                                  onClick={() => handleAchievementStateChange(achievement.id, achievement.unlocked ? 'lock' : 'unlock')}
+                                >
+                                  {achievementPendingId === achievement.id
+                                    ? 'Applying…'
+                                    : achievement.unlocked ? <><LockKeyhole size={14} /> Lock</> : <><LockOpen size={14} /> Unlock</>}
+                                </button>
+                              )}
+                            </article>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    {achievementSummary.status === 'unavailable' && <div className="achievement-unavailable">The running Steam client did not provide achievement data for this game. The game may not have achievements, its stats may be unavailable, or Steam may be temporarily unavailable.</div>}
+                  </>
+                )}
+              </section>
+            </div>
+          </section>
         ) : (
           <>
         {/* Stats Row */}
@@ -1583,7 +1897,7 @@ export default function App() {
         {/* Games Section */}
         <div className="section-header">
           <div className="section-title">
-            Games <span className="badge">{activeTab === 'cards' ? `${cardDropGames.length}${cardDrops.incomplete ? '+' : ''} With Drops` : `${sessions.length} Running`}</span>
+            Games <span className="badge">{activeTab === 'cards' ? `${cardDropGames.length}${cardDrops.incomplete ? '+' : ''} With Drops` : activeTab === 'favorites' ? `${filteredGames.length} Favorites` : `${sessions.length} Running`}</span>
           </div>
           <div className="section-header-actions">
             {isCardScanRunning && (
@@ -1621,6 +1935,8 @@ export default function App() {
                   ? cardEmptyMessage
                   : isSearching
                     ? 'No games owned by the active Steam account match this search.'
+                    : activeTab === 'favorites'
+                      ? 'No favorite games yet. Right-click a game in another section to add it here.'
                     : 'No games could be verified for the active Steam account.'}
               </span>
               {activeTab === 'cards' && (showCardRetry || (!isSearching && cardDrops.status === 'ready')) && (
@@ -1644,13 +1960,22 @@ export default function App() {
             const runningDropsRemaining = cardDropCountsByAppId.get(game.appid);
             
             return (
-              <div key={game.appid} className={`game-card ${isRunning ? 'running' : isQueued ? 'queued' : ''}`}>
+              <div
+                key={game.appid}
+                className={`game-card ${isRunning ? 'running' : isQueued ? 'queued' : ''} ${favoriteGames.includes(game.appid) ? 'favorited' : ''}`}
+                title={`${favoriteGames.includes(game.appid) ? 'Remove from' : 'Add to'} Favorite Games (right-click)`}
+                onContextMenu={event => {
+                  event.preventDefault();
+                  toggleFavoriteGame(game.appid);
+                }}
+              >
                 <div className="game-image-container">
                   <GameCover game={game} />
                   <div className="game-gradient"></div>
                 </div>
                 <div className="game-info">
                   <div className="game-title" title={displayName}>{displayName}</div>
+                  {favoriteGames.includes(game.appid) && <Star className="game-favorite-icon" size={13} fill="currentColor" aria-label="Favorite game" />}
                   
                   {isRunning && session ? (
                     <div className="game-timer">
@@ -1749,7 +2074,7 @@ export default function App() {
       </main>
 
       {/* RIGHT SIDEBAR */}
-      {!isSettingsView && <aside className="sidebar-right">
+      {!isSettingsView && !isAchievementsView && <aside className="sidebar-right">
         <div className="panel-card">
           <div className="panel-header">
             Current Session

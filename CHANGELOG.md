@@ -2,6 +2,15 @@
 
 All notable user-facing changes to HollowRun are documented here.
 
+## 2.0.4 - 2026-11-20
+
+### Added
+
+- Added the Achievement Manager, backed by the running Steam client, with per-game completion progress and achievement icons.
+- Added per-achievement and per-game bulk lock/unlock actions in Achievement Manager edit mode, including confirmations and an in-app ranking-site safety notice.
+- Added local achievement watchlists with All and Watched game tabs, search, and right-click watch toggling.
+- Added Favorite Games to the main navigation, with account-local favorites that can be toggled by right-clicking game cards.
+
 ## 2.0.3 - 2026-10-17
 
 ### Added

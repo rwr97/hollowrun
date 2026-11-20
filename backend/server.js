@@ -153,9 +153,14 @@ const gameInfoRequests = new Map();
 const CARD_DROP_CACHE_MAX_AGE_MS = 5 * 60 * 1000;
 const CARD_DROP_SCAN_TIMEOUT_MS = 2 * 60 * 1000;
 const CARD_DROP_STDOUT_LIMIT = 1024 * 1024;
+const ACHIEVEMENT_SUMMARY_TIMEOUT_MS = 30000;
+const ACHIEVEMENT_SUMMARY_STDOUT_LIMIT = 64 * 1024;
+const ACHIEVEMENT_ICON_STDOUT_LIMIT = 256 * 1024;
+const ACHIEVEMENT_ICON_CACHE_MAX_AGE_MS = 30 * 60 * 1000;
 const IDLE_WORKER_STDOUT_LIMIT = 64 * 1024;
 const cardDropCache = new Map();
 const cardDropRequests = new Map();
+const achievementIconCache = new Map();
 
 function loadGhostConfig() {
   try {
@@ -1784,6 +1789,225 @@ function requestCardDropCountFromWorker(expectedSteamId, appId) {
   });
 }
 
+function requestAchievementSummaryFromWorker(expectedSteamId, appId) {
+  return new Promise(resolve => {
+    const workerExe = getWorkerExecutablePath();
+    if (!workerExe) return resolve({ success: false, reason: 'unavailable' });
+    let child;
+    try {
+      child = spawn(workerExe, ['--achievement-summary', expectedSteamId, String(appId)], {
+        cwd: path.dirname(workerExe), env: createSteamHelperEnvironment(),
+        stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true
+      });
+    } catch {
+      return resolve({ success: false, reason: 'unavailable' });
+    }
+
+    let settled = false;
+    let stdout = '';
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(result);
+    };
+    const timeout = setTimeout(() => {
+      child.kill();
+      finish({ success: false, reason: 'unavailable' });
+    }, ACHIEVEMENT_SUMMARY_TIMEOUT_MS);
+    child.stdout.on('data', data => {
+      if (stdout.length + data.length > ACHIEVEMENT_SUMMARY_STDOUT_LIMIT) {
+        child.kill();
+        finish({ success: false, reason: 'unavailable' });
+        return;
+      }
+      stdout += data.toString();
+    });
+    child.stderr.on('data', () => {});
+    child.on('error', () => finish({ success: false, reason: 'unavailable' }));
+    child.on('close', () => {
+      const line = stdout.split(/\r?\n/).map(item => item.trim()).filter(Boolean).pop();
+      try {
+        const result = JSON.parse(line || '');
+        const unlocked = Number(result?.unlocked);
+        const total = Number(result?.total);
+        if (result?.success === true && result.steamId === expectedSteamId && result.appId === appId
+          && Number.isSafeInteger(unlocked) && Number.isSafeInteger(total)
+          && unlocked >= 0 && total >= unlocked) {
+          const achievements = Array.isArray(result.achievements) ? result.achievements
+            .slice(0, 5000)
+            .flatMap(achievement => {
+              const id = typeof achievement?.id === 'string' ? achievement.id.trim() : '';
+              if (!id || id.length > 256) return [];
+              return [{
+                id,
+                name: typeof achievement?.name === 'string' && achievement.name.trim()
+                  ? achievement.name.trim().slice(0, 300) : id,
+                description: typeof achievement?.description === 'string'
+                  ? achievement.description.trim().slice(0, 600) : '',
+                unlocked: achievement.unlocked === true
+              }];
+            }) : [];
+          finish({ success: true, steamId: expectedSteamId, appId, unlocked, total, achievements });
+          return;
+        }
+      } catch {}
+      finish({ success: false, reason: 'unavailable' });
+    });
+  });
+}
+
+function updateAchievementFromWorker(expectedSteamId, appId, achievementId, action) {
+  return new Promise(resolve => {
+    const workerExe = getWorkerExecutablePath();
+    if (!workerExe) return resolve({ success: false, reason: 'unavailable' });
+    let child;
+    try {
+      child = spawn(workerExe, ['--set-achievement', expectedSteamId, String(appId), achievementId, action], {
+        cwd: path.dirname(workerExe), env: createSteamHelperEnvironment(),
+        stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true
+      });
+    } catch {
+      return resolve({ success: false, reason: 'unavailable' });
+    }
+    let settled = false;
+    let stdout = '';
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(result);
+    };
+    const timeout = setTimeout(() => {
+      child.kill();
+      finish({ success: false, reason: 'unavailable' });
+    }, ACHIEVEMENT_SUMMARY_TIMEOUT_MS);
+    child.stdout.on('data', data => {
+      if (stdout.length + data.length > ACHIEVEMENT_SUMMARY_STDOUT_LIMIT) {
+        child.kill();
+        finish({ success: false, reason: 'unavailable' });
+        return;
+      }
+      stdout += data.toString();
+    });
+    child.stderr.on('data', () => {});
+    child.on('error', () => finish({ success: false, reason: 'unavailable' }));
+    child.on('close', () => {
+      const line = stdout.split(/\r?\n/).map(item => item.trim()).filter(Boolean).pop();
+      try {
+        const result = JSON.parse(line || '');
+        if (result?.success === true && result.steamId === expectedSteamId && result.appId === appId
+          && result.achievementId === achievementId && result.action === action) {
+          finish({ success: true });
+          return;
+        }
+      } catch {}
+      finish({ success: false, reason: 'unavailable' });
+    });
+  });
+}
+
+function updateAllAchievementsFromWorker(expectedSteamId, appId, action) {
+  return new Promise(resolve => {
+    const workerExe = getWorkerExecutablePath();
+    if (!workerExe) return resolve({ success: false, reason: 'unavailable' });
+    let child;
+    try {
+      child = spawn(workerExe, ['--set-all-achievements', expectedSteamId, String(appId), action], {
+        cwd: path.dirname(workerExe), env: createSteamHelperEnvironment(),
+        stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true
+      });
+    } catch {
+      return resolve({ success: false, reason: 'unavailable' });
+    }
+    let settled = false;
+    let stdout = '';
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(result);
+    };
+    const timeout = setTimeout(() => {
+      child.kill();
+      finish({ success: false, reason: 'unavailable' });
+    }, ACHIEVEMENT_SUMMARY_TIMEOUT_MS);
+    child.stdout.on('data', data => {
+      if (stdout.length + data.length > ACHIEVEMENT_SUMMARY_STDOUT_LIMIT) {
+        child.kill();
+        finish({ success: false, reason: 'unavailable' });
+        return;
+      }
+      stdout += data.toString();
+    });
+    child.stderr.on('data', () => {});
+    child.on('error', () => finish({ success: false, reason: 'unavailable' }));
+    child.on('close', () => {
+      const line = stdout.split(/\r?\n/).map(item => item.trim()).filter(Boolean).pop();
+      try {
+        const result = JSON.parse(line || '');
+        if (result?.success === true && result.steamId === expectedSteamId
+          && result.appId === appId && result.action === action) {
+          finish({ success: true, changed: Number(result.changed) || 0 });
+          return;
+        }
+      } catch {}
+      finish({ success: false, reason: 'unavailable' });
+    });
+  });
+}
+
+function requestAchievementIconFromWorker(expectedSteamId, appId, achievementId) {
+  return new Promise(resolve => {
+    const workerExe = getWorkerExecutablePath();
+    if (!workerExe) return resolve(null);
+    let child;
+    try {
+      child = spawn(workerExe, ['--achievement-icon', expectedSteamId, String(appId), achievementId], {
+        cwd: path.dirname(workerExe), env: createSteamHelperEnvironment(),
+        stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true
+      });
+    } catch {
+      return resolve(null);
+    }
+    let settled = false;
+    let stdout = '';
+    const finish = result => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(result);
+    };
+    const timeout = setTimeout(() => {
+      child.kill();
+      finish(null);
+    }, ACHIEVEMENT_SUMMARY_TIMEOUT_MS);
+    child.stdout.on('data', data => {
+      if (stdout.length + data.length > ACHIEVEMENT_ICON_STDOUT_LIMIT) {
+        child.kill();
+        finish(null);
+        return;
+      }
+      stdout += data.toString();
+    });
+    child.stderr.on('data', () => {});
+    child.on('error', () => finish(null));
+    child.on('close', () => {
+      const line = stdout.split(/\r?\n/).map(item => item.trim()).filter(Boolean).pop();
+      try {
+        const result = JSON.parse(line || '');
+        if (result?.success !== true || result.steamId !== expectedSteamId || result.appId !== appId
+          || result.achievementId !== achievementId || typeof result.image !== 'string') return finish(null);
+        const image = Buffer.from(result.image, 'base64');
+        if (image.length < 54 || image.length > 128 * 1024 || image[0] !== 0x42 || image[1] !== 0x4d) return finish(null);
+        finish(image);
+      } catch {
+        finish(null);
+      }
+    });
+  });
+}
+
 async function getCardDropsForActiveAccount(steamId, force = false, onProgress = null) {
   const cached = cardDropCache.get(steamId);
   if (!force && cached && Date.now() - cached.cachedAt < CARD_DROP_CACHE_MAX_AGE_MS) {
@@ -2443,6 +2667,73 @@ app.get('/api/card-drops/check/:appid', async (req, res) => {
   updateCachedCardDropCount(activeUser.steamId, appId, result.dropsRemaining);
   res.setHeader('Cache-Control', 'no-store');
   return res.json(result);
+});
+
+// Achievement data is read from the local authenticated Steam client. HollowRun
+// does not alter Steam achievement state or communicate with ranking services.
+app.get('/api/achievements/:appid', async (req, res) => {
+  const appId = parseAppId(req.params.appid);
+  if (appId === null || appId <= 10) {
+    return res.status(400).json({ success: false, reason: 'invalid-appid' });
+  }
+  const activeUser = getActiveSteamUser(getSteamPath());
+  if (!activeUser || !/^7656\d{13}$/.test(activeUser.steamId)) {
+    return res.status(503).json({ success: false, reason: 'steam-client-unavailable' });
+  }
+  const result = await requestAchievementSummaryFromWorker(activeUser.steamId, appId);
+  if (!result.success) return res.status(503).json(result);
+  res.setHeader('Cache-Control', 'no-store');
+  return res.json({ ...result, percent: result.total > 0 ? Math.round((result.unlocked / result.total) * 100) : 0 });
+});
+
+app.post('/api/achievements/:appid', async (req, res) => {
+  const appId = parseAppId(req.params.appid);
+  const achievementId = typeof req.body?.achievementId === 'string' ? req.body.achievementId.trim() : '';
+  const action = req.body?.action;
+  if (appId === null || appId <= 10 || !achievementId || achievementId.length > 256
+    || (action !== 'unlock' && action !== 'lock')) {
+    return res.status(400).json({ success: false, reason: 'invalid-request' });
+  }
+  const activeUser = getActiveSteamUser(getSteamPath());
+  if (!activeUser || !/^7656\d{13}$/.test(activeUser.steamId)) {
+    return res.status(503).json({ success: false, reason: 'steam-client-unavailable' });
+  }
+  const result = await updateAchievementFromWorker(activeUser.steamId, appId, achievementId, action);
+  if (!result.success) return res.status(503).json(result);
+  return res.json(result);
+});
+
+app.post('/api/achievements/:appid/all', async (req, res) => {
+  const appId = parseAppId(req.params.appid);
+  const action = req.body?.action;
+  if (appId === null || appId <= 10 || (action !== 'unlock' && action !== 'lock')) {
+    return res.status(400).json({ success: false, reason: 'invalid-request' });
+  }
+  const activeUser = getActiveSteamUser(getSteamPath());
+  if (!activeUser || !/^7656\d{13}$/.test(activeUser.steamId)) {
+    return res.status(503).json({ success: false, reason: 'steam-client-unavailable' });
+  }
+  const result = await updateAllAchievementsFromWorker(activeUser.steamId, appId, action);
+  if (!result.success) return res.status(503).json(result);
+  return res.json(result);
+});
+
+app.get('/api/achievements/:appid/icon/:achievementid', async (req, res) => {
+  const appId = parseAppId(req.params.appid);
+  const achievementId = typeof req.params.achievementid === 'string' ? req.params.achievementid.trim() : '';
+  if (appId === null || appId <= 10 || !achievementId || achievementId.length > 256) return res.status(400).end();
+  const activeUser = getActiveSteamUser(getSteamPath());
+  if (!activeUser || !/^7656\d{13}$/.test(activeUser.steamId)) return res.status(503).end();
+  const cacheKey = `${activeUser.steamId}:${appId}:${achievementId}`;
+  const cached = achievementIconCache.get(cacheKey);
+  const image = cached && Date.now() - cached.cachedAt < ACHIEVEMENT_ICON_CACHE_MAX_AGE_MS
+    ? cached.image
+    : await requestAchievementIconFromWorker(activeUser.steamId, appId, achievementId);
+  if (!image) return res.status(404).end();
+  if (!cached || cached.image !== image) achievementIconCache.set(cacheKey, { image, cachedAt: Date.now() });
+  res.setHeader('Cache-Control', 'private, max-age=1800');
+  res.setHeader('Content-Type', 'image/bmp');
+  return res.send(image);
 });
 
 // Fetch detailed Steam info for a specific game
