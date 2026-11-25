@@ -278,6 +278,50 @@ export default function App() {
     }
   };
 
+  const handleCheckForUpdates = async () => {
+    if (!window.hollowrun?.checkForUpdates) return;
+    setSettingsPendingAction('update');
+    setSettingsFeedback(null);
+    try {
+      const result = await window.hollowrun.checkForUpdates();
+      if (result?.status === 'current') {
+        setSettingsFeedback({
+          type: 'success',
+          text: `HollowRun is up to date${result.version ? ` (v${result.version})` : ''}.`
+        });
+      } else if (['available', 'downloading'].includes(result?.status)) {
+        setSettingsFeedback({
+          type: 'success',
+          text: `HollowRun ${result.version ? `v${result.version} ` : ''}is downloading. You will be prompted to restart when it is ready.`
+        });
+      } else if (result?.status === 'downloaded') {
+        setSettingsFeedback({
+          type: 'success',
+          text: `HollowRun v${result.version} is ready to install. Choose Restart now in the update prompt.`
+        });
+      } else if (result?.status === 'unsupported') {
+        setSettingsFeedback({
+          type: 'info',
+          text: 'Automatic updates are available in packaged Windows builds. Use View releases for manual downloads.'
+        });
+      } else if (result?.status === 'unavailable') {
+        setSettingsFeedback({
+          type: 'info',
+          text: 'Portable update metadata is not published for this release yet. Use View releases for manual downloads.'
+        });
+      } else {
+        setSettingsFeedback({
+          type: 'error',
+          text: result?.message || 'HollowRun could not check for updates.'
+        });
+      }
+    } catch (error) {
+      setSettingsFeedback({ type: 'error', text: error.message });
+    } finally {
+      setSettingsPendingAction(null);
+    }
+  };
+
   const handleTestCrashReport = async () => {
     if (!window.hollowrun?.testReportsAvailable || !window.hollowrun.sendTestCrashReport) return;
     setSettingsPendingAction('test');
@@ -434,15 +478,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ achievementId, action })
       });
-      setAchievementSummary(previous => {
-        if (!previous.data) return previous;
-        const achievements = (previous.data.achievements || []).map(achievement => (
-          achievement.id === achievementId ? { ...achievement, unlocked: action === 'unlock' } : achievement
-        ));
-        const unlocked = achievements.filter(achievement => achievement.unlocked).length;
-        const total = Number(previous.data.total) || achievements.length;
-        return { ...previous, data: { ...previous.data, achievements, unlocked, percent: total > 0 ? Math.round((unlocked / total) * 100) : 0 } };
-      });
+      await openAchievementGame(selectedAchievementGame);
     } catch (error) {
       setErrorMessage(`Could not ${label} this achievement: ${error.message}`);
     } finally {
@@ -461,18 +497,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action })
       });
-      setAchievementSummary(previous => {
-        if (!previous.data) return previous;
-        const achievements = (previous.data.achievements || []).map(achievement => ({
-          ...achievement, unlocked: action === 'unlock'
-        }));
-        const unlocked = action === 'unlock' ? achievements.length : 0;
-        const total = Number(previous.data.total) || achievements.length;
-        return {
-          ...previous,
-          data: { ...previous.data, achievements, unlocked, percent: action === 'unlock' && total > 0 ? 100 : 0 }
-        };
-      });
+      await openAchievementGame(selectedAchievementGame);
     } catch (error) {
       setErrorMessage(`Could not ${action} all achievements: ${error.message}`);
     } finally {
@@ -1694,6 +1719,7 @@ export default function App() {
             feedback={settingsFeedback}
             onToggleReports={handleToggleCrashReports}
             onRestart={handleRestartApp}
+            onCheckForUpdates={handleCheckForUpdates}
             onTestReport={handleTestCrashReport}
             testReportsAvailable={window.hollowrun?.testReportsAvailable === true}
           />

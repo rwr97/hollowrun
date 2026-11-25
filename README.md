@@ -46,6 +46,19 @@ The outputs are written to `dist-electron\HollowRun Setup <version>.exe` and
 `dist-electron\HollowRun <version>.exe`. See [COMMANDS.MD](COMMANDS.MD) for the
 complete build notes.
 
+## Updates
+
+Windows installer and portable builds check GitHub Releases when HollowRun
+starts and download available updates in the background. When a download
+finishes, HollowRun offers to restart and install it; otherwise it applies when
+HollowRun next closes. The portable build replaces its executable at the same
+location. Use **Settings → Updates → Check for updates** to check manually and
+see whether you are up to date. **View releases** remains available for manual
+downloads.
+
+The first updater-enabled release must have a version newer than the current
+2.0.4 release so existing installs can discover it.
+
 Crash reporting requires a Sentry project DSN. Readable production React stacks
 also require CI-only source-map credentials and an explicit
 `SENTRY_UPLOAD_SOURCEMAPS=true` build setting; local builds never upload by default.

@@ -1,4 +1,4 @@
-import { Bug, RotateCw, Send, ShieldCheck } from 'lucide-react';
+import { Bug, ExternalLink, RotateCw, Send, ShieldCheck } from 'lucide-react';
 
 export default function SettingsView({
   settings,
@@ -6,6 +6,7 @@ export default function SettingsView({
   feedback,
   onToggleReports,
   onRestart,
+  onCheckForUpdates,
   onTestReport,
   testReportsAvailable
 }) {
@@ -61,6 +62,37 @@ export default function SettingsView({
             Crash reporting has no Sentry destination in this build, so it cannot be enabled yet.
           </div>
         )}
+
+        <div className="settings-report-details">
+          <div className="settings-detail-title"><RotateCw size={15} /> Updates</div>
+          <p>
+            Installer and portable versions check for updates when HollowRun starts and download them in the background.
+            Portable updates replace the executable at its current location after restart.
+          </p>
+          <div className="settings-actions">
+            <button
+              type="button"
+              disabled={isBusy || !window.hollowrun?.checkForUpdates}
+              onClick={onCheckForUpdates}
+            >
+              <RotateCw size={14} /> {pendingAction === 'update' ? 'Checking...' : 'Check for updates'}
+            </button>
+            <button
+              type="button"
+              disabled={!window.hollowrun?.openRepositoryPage}
+              onClick={() => window.hollowrun.openRepositoryPage()}
+            >
+              <ExternalLink size={14} /> GitHub repo
+            </button>
+            <button
+              type="button"
+              disabled={!window.hollowrun?.openReleasesPage}
+              onClick={() => window.hollowrun.openReleasesPage()}
+            >
+              <ExternalLink size={14} /> View releases
+            </button>
+          </div>
+        </div>
 
         {restartRequired && (
           <div className="settings-notice" role="status">

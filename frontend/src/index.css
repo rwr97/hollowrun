@@ -903,6 +903,8 @@ select:focus-visible {
 
 .settings-actions {
   display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
   justify-content: flex-end;
   padding: 16px 18px 0;
 }

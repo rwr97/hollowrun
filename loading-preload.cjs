@@ -8,6 +8,9 @@ const hollowrunApi = {
   testReportsAvailable,
   getSettings: () => ipcRenderer.invoke('settings:get'),
   setAutomaticCrashReports: enabled => ipcRenderer.invoke('settings:set-crash-reports', enabled),
+  checkForUpdates: () => ipcRenderer.invoke('app:check-for-updates'),
+  openReleasesPage: () => ipcRenderer.invoke('app:open-releases'),
+  openRepositoryPage: () => ipcRenderer.invoke('app:open-repository'),
   restart: () => ipcRenderer.invoke('app:restart')
 };
 

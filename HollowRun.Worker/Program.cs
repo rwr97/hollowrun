@@ -432,7 +432,7 @@ namespace HollowRun.Worker
                 }
 
                 bool changed = action == "unlock" ? achievement.Trigger(false) : achievement.Clear();
-                bool stored = changed && SteamUserStats.StoreStats();
+                bool stored = changed && StoreAchievementChanges();
                 Console.WriteLine(JsonSerializer.Serialize(new {
                     success = changed && stored,
                     steamId = expectedSteamId,
@@ -480,7 +480,7 @@ namespace HollowRun.Worker
                     bool needsChange = action == "unlock" ? !achievement.State : achievement.State;
                     if (needsChange && (action == "unlock" ? achievement.Trigger(false) : achievement.Clear())) changed++;
                 }
-                bool stored = changed == 0 || SteamUserStats.StoreStats();
+                bool stored = changed == 0 || StoreAchievementChanges();
                 Console.WriteLine(JsonSerializer.Serialize(new {
                     success = stored,
                     steamId = expectedSteamId,
@@ -560,6 +560,33 @@ namespace HollowRun.Worker
             finally
             {
                 TryShutdownSteam();
+            }
+        }
+
+        private static bool StoreAchievementChanges()
+        {
+            bool storeCompleted = false;
+            bool storeSucceeded = false;
+            void OnStatsStored(Result result)
+            {
+                storeCompleted = true;
+                storeSucceeded = string.Equals(result.ToString(), "OK", StringComparison.OrdinalIgnoreCase);
+            }
+
+            SteamUserStats.OnUserStatsStored += OnStatsStored;
+            try
+            {
+                if (!SteamUserStats.StoreStats()) return false;
+                for (int attempt = 0; attempt < 50 && !storeCompleted; attempt++)
+                {
+                    SteamClient.RunCallbacks();
+                    Thread.Sleep(100);
+                }
+                return storeCompleted && storeSucceeded;
+            }
+            finally
+            {
+                SteamUserStats.OnUserStatsStored -= OnStatsStored;
             }
         }
 

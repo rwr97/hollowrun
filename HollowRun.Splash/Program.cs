@@ -13,6 +13,12 @@ internal static class Program
     [STAThread]
     private static void Main(string[] args)
     {
+        if (args.Any(argument => argument.Equals("--apply-portable-update", StringComparison.OrdinalIgnoreCase)))
+        {
+            PortableUpdateInstaller.Run(args);
+            return;
+        }
+
         string? doneFile = null;
         int? parentProcessId = null;
 

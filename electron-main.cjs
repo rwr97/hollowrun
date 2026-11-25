@@ -1,4 +1,6 @@
-const { app, BrowserWindow, dialog, ipcMain, screen, session, utilityProcess } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, net, screen, session, shell, utilityProcess } = require('electron');
+const { autoUpdater } = require('electron-updater');
+const { spawn } = require('node:child_process');
 const fs = require('fs');
 const path = require('path');
 const { pathToFileURL } = require('url');
@@ -15,6 +17,7 @@ const {
 const { readSettings, writeSettings } = require('./settings.cjs');
 const { requestLocalJson } = require('./local-service-client.cjs');
 const { getPortableRelaunchOptions } = require('./portable-relaunch.cjs');
+const portableUpdater = require('./portable-updater.cjs');
 const { isSteamClientReady } = require('./startup-gate.cjs');
 const {
   MIN_HEIGHT,
@@ -25,6 +28,8 @@ const {
 } = require('./window-state.cjs');
 
 const SERVER_URL = 'http://127.0.0.1:3824';
+const GITHUB_REPOSITORY_URL = 'https://github.com/lwkshy/hollowrun';
+const RELEASES_URL = 'https://github.com/lwkshy/hollowrun/releases';
 const LOADING_PAGE_PATH = path.join(__dirname, 'loading.html');
 const LOADING_PAGE_URL = pathToFileURL(LOADING_PAGE_PATH).href;
 const SERVER_STARTUP_TIMEOUT_MS = 15000;
@@ -42,6 +47,20 @@ let backendReady = false;
 let backendExitCode = null;
 let backendStderr = '';
 let isQuitting = false;
+let downloadedUpdateVersion = null;
+let availableUpdateVersion = null;
+let isUpdateDownloading = false;
+let isUpdatePromptVisible = false;
+let autoUpdaterConfigured = false;
+let updateCheckPromise = null;
+let portableUpdateCheckPromise = null;
+let portableUpdateDownloadPromise = null;
+let portableUpdateManifest = null;
+let portableUpdateFilePath = null;
+let portableUpdateStatePath = null;
+let portableUpdateError = null;
+let portableUpdateErrorShown = false;
+let portableUpdateHandoffStarted = false;
 let startupState = {
   progress: 8,
   action: 'Preparing application window...'
@@ -89,6 +108,46 @@ function getPublicSettings() {
 
 ipcMain.handle('settings:get', () => getPublicSettings());
 
+ipcMain.handle('app:open-repository', () => shell.openExternal(GITHUB_REPOSITORY_URL));
+
+ipcMain.handle('app:open-releases', () => shell.openExternal(RELEASES_URL));
+
+ipcMain.handle('app:check-for-updates', async () => {
+  if (!app.isPackaged || process.platform !== 'win32') return { status: 'unsupported' };
+  if (isPortableBuild()) return checkForPortableUpdate();
+  if (!isAutoUpdateSupported()) return { status: 'unsupported' };
+  if (downloadedUpdateVersion) {
+    promptForDownloadedUpdate();
+    return { status: 'downloaded', version: downloadedUpdateVersion };
+  }
+  if (isUpdateDownloading && availableUpdateVersion) {
+    return { status: 'downloading', version: availableUpdateVersion };
+  }
+
+  try {
+    const result = await requestUpdateCheck();
+    if (!result) return { status: 'unsupported' };
+    if (downloadedUpdateVersion) {
+      return { status: 'downloaded', version: downloadedUpdateVersion };
+    }
+    if (!result.isUpdateAvailable) {
+      return { status: 'current', version: app.getVersion() };
+    }
+
+    const version = result.updateInfo?.version || availableUpdateVersion;
+    if (version) availableUpdateVersion = version;
+    return {
+      status: isUpdateDownloading ? 'downloading' : 'available',
+      version
+    };
+  } catch (error) {
+    return {
+      status: 'error',
+      message: error?.message || 'HollowRun could not check for updates.'
+    };
+  }
+});
+
 ipcMain.handle('settings:set-crash-reports', async (_event, enabled) => {
   if (typeof enabled !== 'boolean') throw new TypeError('Crash reporting preference must be a boolean.');
   if (enabled && !crashReportingConfig.configured) {
@@ -106,7 +165,17 @@ ipcMain.handle('settings:set-crash-reports', async (_event, enabled) => {
   return getPublicSettings();
 });
 
-ipcMain.handle('app:restart', () => {
+ipcMain.handle('app:restart', async () => {
+  if (downloadedUpdateVersion && isPortableBuild()) {
+    await startPortableUpdateHandoff();
+    setImmediate(() => app.quit());
+    return true;
+  }
+  if (downloadedUpdateVersion && isAutoUpdateSupported()) {
+    autoUpdater.quitAndInstall();
+    return true;
+  }
+
   const relaunchOptions = getPortableRelaunchOptions({
     isPackaged: app.isPackaged,
     platform: process.platform,
@@ -124,6 +193,314 @@ if (!app.isPackaged) {
   ipcMain.handle('crash-reporting:test', async () => ({
     eventId: await sendTestReport()
   }));
+}
+
+function promptForDownloadedUpdate() {
+  if (
+    !downloadedUpdateVersion
+    || isUpdatePromptVisible
+    || !backendReady
+    || !mainWindow
+    || mainWindow.isDestroyed()
+  ) return;
+
+  if (mainWindow.webContents.getURL() !== SERVER_URL) {
+    mainWindow.webContents.once('did-finish-load', promptForDownloadedUpdate);
+    return;
+  }
+
+  isUpdatePromptVisible = true;
+  const version = downloadedUpdateVersion;
+  const portableBuild = isPortableBuild();
+  dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    title: 'HollowRun Update Ready',
+    message: `HollowRun ${version} has been downloaded.`,
+    detail: portableBuild
+      ? 'Restart now to replace the portable executable at its current location, or choose Later to keep working. The update will apply when you next close HollowRun.'
+      : 'Restart now to install it, or choose Later to keep working. The update will install when you next close HollowRun.',
+    buttons: ['Restart now', 'Later'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true
+  }).then(({ response }) => {
+    if (response !== 0) return;
+    if (!portableBuild) {
+      autoUpdater.quitAndInstall();
+      return;
+    }
+    return startPortableUpdateHandoff()
+      .then(() => app.quit())
+      .catch(async (error) => {
+        await dialog.showMessageBox(mainWindow, {
+          type: 'error',
+          title: 'HollowRun Update Failed',
+          message: 'HollowRun could not start the portable update helper.',
+          detail: error.message,
+          buttons: ['Close'],
+          defaultId: 0,
+          cancelId: 0,
+          noLink: true
+        });
+      });
+  }).catch((error) => {
+    console.error(`Could not show the update prompt: ${error.message}`);
+  }).finally(() => {
+    isUpdatePromptVisible = false;
+  });
+}
+
+function isPortableBuild() {
+  return Boolean(getPortableRelaunchOptions({
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    environment: process.env
+  }));
+}
+
+function isAutoUpdateSupported() {
+  return app.isPackaged
+    && process.platform === 'win32'
+    && !isPortableBuild();
+}
+
+function configureAutoUpdater() {
+  if (!isAutoUpdateSupported() || autoUpdaterConfigured) return false;
+
+  autoUpdaterConfigured = true;
+  autoUpdater.autoDownload = true;
+  autoUpdater.autoInstallOnAppQuit = true;
+  autoUpdater.on('update-available', (info) => {
+    availableUpdateVersion = info.version;
+    isUpdateDownloading = true;
+    console.log(`HollowRun ${info.version} is available; downloading in the background.`);
+  });
+  autoUpdater.on('update-not-available', () => {
+    availableUpdateVersion = null;
+    isUpdateDownloading = false;
+    console.log('HollowRun is up to date.');
+  });
+  autoUpdater.on('update-downloaded', (info) => {
+    downloadedUpdateVersion = info.version;
+    isUpdateDownloading = false;
+    promptForDownloadedUpdate();
+  });
+  autoUpdater.on('error', (error) => {
+    isUpdateDownloading = false;
+    console.warn(`HollowRun update check failed: ${error.message}`);
+  });
+
+  return true;
+}
+
+function requestUpdateCheck() {
+  if (!isAutoUpdateSupported()) return Promise.resolve(null);
+  configureAutoUpdater();
+  if (updateCheckPromise) return updateCheckPromise;
+
+  updateCheckPromise = autoUpdater.checkForUpdates();
+  const currentCheck = updateCheckPromise;
+  currentCheck.then(
+    () => {
+      if (updateCheckPromise === currentCheck) updateCheckPromise = null;
+    },
+    () => {
+      if (updateCheckPromise === currentCheck) updateCheckPromise = null;
+    }
+  );
+  return currentCheck;
+}
+
+async function checkForPortableUpdate() {
+  if (!isPortableBuild()) return { status: 'unsupported' };
+  if (downloadedUpdateVersion && portableUpdateFilePath) {
+    promptForDownloadedUpdate();
+    return { status: 'downloaded', version: downloadedUpdateVersion };
+  }
+  if (portableUpdateDownloadPromise && portableUpdateManifest) {
+    return { status: 'downloading', version: portableUpdateManifest.version };
+  }
+  if (portableUpdateCheckPromise) {
+    try {
+      return await portableUpdateCheckPromise;
+    } catch (error) {
+      return {
+        status: 'error',
+        message: error?.message || 'HollowRun could not check for portable updates.'
+      };
+    }
+  }
+
+  const currentCheck = (async () => {
+    const userDataPath = app.getPath('userData');
+    const pending = await portableUpdater.loadPendingPortableUpdate(userDataPath, app.getVersion());
+    if (pending) {
+      portableUpdateManifest = pending.manifest;
+      portableUpdateFilePath = pending.updateFilePath;
+      portableUpdateStatePath = pending.pendingFilePath;
+      downloadedUpdateVersion = pending.manifest.version;
+      promptForDownloadedUpdate();
+      return { status: 'downloaded', version: downloadedUpdateVersion };
+    }
+
+    const fetchImpl = (url, options) => net.fetch(url, options);
+    const result = await portableUpdater.fetchLatestPortableUpdate(app.getVersion(), fetchImpl);
+    if (result.status === 'current' || result.status === 'unavailable') return result;
+
+    portableUpdateManifest = result.manifest;
+    availableUpdateVersion = result.manifest.version;
+    isUpdateDownloading = true;
+    portableUpdateError = null;
+    portableUpdateErrorShown = false;
+    portableUpdateDownloadPromise = portableUpdater.downloadPortableUpdate(
+      result.manifest,
+      userDataPath,
+      fetchImpl
+    ).then((downloaded) => {
+      portableUpdateFilePath = downloaded.updateFilePath;
+      portableUpdateStatePath = downloaded.pendingFilePath;
+      downloadedUpdateVersion = result.manifest.version;
+      isUpdateDownloading = false;
+      portableUpdateError = null;
+      promptForDownloadedUpdate();
+    }).catch((error) => {
+      isUpdateDownloading = false;
+      portableUpdateError = error;
+      portableUpdateManifest = null;
+      availableUpdateVersion = null;
+      console.warn(`HollowRun portable update download failed: ${error.message}`);
+      showPortableUpdateDownloadError();
+    }).finally(() => {
+      portableUpdateDownloadPromise = null;
+    });
+
+    return { status: 'downloading', version: result.manifest.version };
+  })();
+
+  portableUpdateCheckPromise = currentCheck;
+  try {
+    return await currentCheck;
+  } catch (error) {
+    return {
+      status: 'error',
+      message: error?.message || 'HollowRun could not check for portable updates.'
+    };
+  } finally {
+    if (portableUpdateCheckPromise === currentCheck) portableUpdateCheckPromise = null;
+  }
+}
+
+function showPortableUpdateDownloadError() {
+  if (
+    !portableUpdateError
+    || portableUpdateErrorShown
+    || !backendReady
+    || !mainWindow
+    || mainWindow.isDestroyed()
+  ) return;
+
+  portableUpdateErrorShown = true;
+  dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    title: 'Portable Update Failed',
+    message: 'HollowRun could not download the portable update.',
+    detail: `${portableUpdateError.message}\n\nYou can retry from Settings or use View releases.`,
+    buttons: ['Close', 'View releases'],
+    defaultId: 0,
+    cancelId: 0,
+    noLink: true
+  }).then(({ response }) => {
+    if (response === 1) shell.openExternal(RELEASES_URL);
+  }).catch((error) => {
+    console.error(`Could not show the portable update error: ${error.message}`);
+  });
+}
+
+function startPortableUpdateHandoff() {
+  if (portableUpdateHandoffStarted) return Promise.resolve();
+  if (!isPortableBuild() || !portableUpdateManifest || !portableUpdateFilePath || !portableUpdateStatePath) {
+    return Promise.reject(new Error('The portable update is not ready to install.'));
+  }
+
+  const targetPath = getPortableRelaunchOptions({
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    environment: process.env
+  })?.execPath;
+  if (!targetPath) return Promise.reject(new Error('The portable executable path is unavailable.'));
+
+  const helperSource = path.join(process.resourcesPath, 'HollowRun.PortableUpdater.exe');
+  if (!fs.existsSync(helperSource)) {
+    return Promise.reject(new Error('The portable update helper is missing from this build.'));
+  }
+
+  const helperPath = path.join(app.getPath('userData'), `portable-updater-${app.getVersion()}.exe`);
+  fs.copyFileSync(helperSource, helperPath);
+  const installedMarkerPath = path.join(app.getPath('userData'), 'portable-update-installed.txt');
+  const helperArguments = [
+    '--apply-portable-update',
+    '--parent-process-id', String(process.ppid),
+    '--target', targetPath,
+    '--staged-update', portableUpdateFilePath,
+    '--pending-file', portableUpdateStatePath,
+    '--installed-marker', installedMarkerPath,
+    '--sha512', portableUpdateManifest.sha512,
+    '--version', portableUpdateManifest.version
+  ];
+
+  let helperProcess;
+  try {
+    helperProcess = spawn(helperPath, helperArguments, {
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: true
+    });
+  } catch (error) {
+    return Promise.reject(error);
+  }
+
+  portableUpdateHandoffStarted = true;
+  return new Promise((resolve, reject) => {
+    helperProcess.once('spawn', () => {
+      helperProcess.unref();
+      resolve();
+    });
+    helperProcess.once('error', (error) => {
+      portableUpdateHandoffStarted = false;
+      reject(error);
+    });
+  });
+}
+
+function cleanupSuccessfulPortableUpdate() {
+  if (!isPortableBuild()) return;
+  const targetPath = getPortableRelaunchOptions({
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    environment: process.env
+  })?.execPath;
+  if (!targetPath) return;
+
+  const markerPath = path.join(app.getPath('userData'), 'portable-update-installed.txt');
+  try {
+    const installedVersion = fs.readFileSync(markerPath, 'utf8').trim();
+    if (installedVersion !== app.getVersion()) return;
+    fs.rmSync(`${targetPath}.previous`, { force: true });
+    fs.rmSync(markerPath, { force: true });
+  } catch {
+    // The marker is created only when the portable helper applies an update.
+  }
+}
+
+function startUpdateCheck() {
+  if (isPortableBuild()) {
+    checkForPortableUpdate().catch((error) => {
+      console.warn(`HollowRun portable update check failed: ${error.message}`);
+    });
+    return;
+  }
+  if (!isAutoUpdateSupported()) return;
+  requestUpdateCheck().catch(() => {});
 }
 
 async function clearLegacySteamCommunitySession() {
@@ -373,6 +750,7 @@ app.whenReady().then(async () => {
   if (!hasSingleInstanceLock) return;
 
   createWindow();
+  startUpdateCheck();
   scheduleLegacySteamCommunityCleanup();
   updateStartupProgress(20, 'Starting local services...');
   const serverPath = path.join(__dirname, 'backend', 'server.js');
@@ -416,6 +794,9 @@ app.whenReady().then(async () => {
     updateStartupProgress(88, 'Loading your Steam library...');
     backendReady = true;
     loadWindowContent();
+    cleanupSuccessfulPortableUpdate();
+    showPortableUpdateDownloadError();
+    promptForDownloadedUpdate();
   } else {
     console.error('Backend server failed to start on port 3824 in time.');
     await showBackendStartupFailure();
@@ -446,6 +827,15 @@ app.on('window-all-closed', function () {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  if (isPortableBuild() && downloadedUpdateVersion && !portableUpdateHandoffStarted) {
+    try {
+      startPortableUpdateHandoff().catch((error) => {
+        console.error(`Could not start the portable update helper on exit: ${error.message}`);
+      });
+    } catch (error) {
+      console.error(`Could not start the portable update helper on exit: ${error.message}`);
+    }
+  }
   if (serverProcess) {
     console.log('Terminating backend server...');
     serverProcess.kill();

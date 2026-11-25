@@ -2,6 +2,12 @@
 
 All notable user-facing changes to HollowRun are documented here.
 
+## Unreleased
+
+### Added
+
+- Added launch-time update checks and background downloads for installer and portable builds, a manual Settings check with current-version feedback, a restart prompt, and a release-page link for manual downloads.
+
 ## 2.0.4 - 2026-11-20
 
 ### Added
