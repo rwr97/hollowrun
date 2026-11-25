@@ -2,6 +2,13 @@
 
 All notable user-facing changes to HollowRun are documented here.
 
+## 2.0.6 - 2026-11-25
+
+### Fixed
+
+- Portable update checks now fall back to GitHub release metadata when the optional `portable-update.json` asset is missing, including the published portable asset's SHA-256 digest.
+- Added a one-time startup notice after updates with the new version and GitHub release notes.
+
 ## 2.0.5 - 2026-11-25
 
 ### Added
@@ -12,7 +19,7 @@ All notable user-facing changes to HollowRun are documented here.
 ### Changed
 
 - Reordered the Settings sections so privacy, updates, and maintenance controls are easier to follow.
-- Portable update checks treat a missing release manifest as an expected manual-download state instead of showing an error at launch.
+- Portable update checks fall back to GitHub release metadata when a release does not include the optional manifest, including the published 2.0.5 asset naming and SHA-256 digest.
 
 ### Removed
 

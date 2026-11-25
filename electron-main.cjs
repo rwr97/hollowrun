@@ -28,8 +28,10 @@ const {
 } = require('./window-state.cjs');
 
 const SERVER_URL = 'http://127.0.0.1:3824';
-const GITHUB_REPOSITORY_URL = 'https://github.com/lwkshy/hollowrun';
-const RELEASES_URL = 'https://github.com/lwkshy/hollowrun/releases';
+const GITHUB_REPOSITORY_URL = 'https://github.com/rwr97/hollowrun';
+const RELEASES_URL = 'https://github.com/rwr97/hollowrun/releases';
+const GITHUB_API_URL = 'https://api.github.com/repos/rwr97/hollowrun';
+const UPDATE_NOTICE_FILE = 'update-notice-pending.json';
 const LOADING_PAGE_PATH = path.join(__dirname, 'loading.html');
 const LOADING_PAGE_URL = pathToFileURL(LOADING_PAGE_PATH).href;
 const SERVER_STARTUP_TIMEOUT_MS = 15000;
@@ -189,11 +191,13 @@ ipcMain.handle('settings:set-crash-reports', async (_event, enabled) => {
 
 ipcMain.handle('app:restart', async () => {
   if (downloadedUpdateVersion && isPortableBuild()) {
+    recordPendingUpdateNotice(downloadedUpdateVersion);
     await startPortableUpdateHandoff();
     setImmediate(() => app.quit());
     return true;
   }
   if (downloadedUpdateVersion && isAutoUpdateSupported()) {
+    recordPendingUpdateNotice(downloadedUpdateVersion);
     autoUpdater.quitAndInstall();
     return true;
   }
@@ -248,9 +252,11 @@ function promptForDownloadedUpdate() {
   }).then(({ response }) => {
     if (response !== 0) return;
     if (!portableBuild) {
+      recordPendingUpdateNotice(version);
       autoUpdater.quitAndInstall();
       return;
     }
+    recordPendingUpdateNotice(version);
     return startPortableUpdateHandoff()
       .then(() => app.quit())
       .catch(async (error) => {
@@ -466,7 +472,8 @@ function startPortableUpdateHandoff() {
     '--staged-update', portableUpdateFilePath,
     '--pending-file', portableUpdateStatePath,
     '--installed-marker', installedMarkerPath,
-    '--sha512', portableUpdateManifest.sha512,
+    '--hash-algorithm', portableUpdateManifest.hashAlgorithm,
+    '--checksum', portableUpdateManifest.sha512 || portableUpdateManifest.sha256,
     '--version', portableUpdateManifest.version
   ];
 
@@ -507,11 +514,77 @@ function cleanupSuccessfulPortableUpdate() {
   try {
     const installedVersion = fs.readFileSync(markerPath, 'utf8').trim();
     if (installedVersion !== app.getVersion()) return;
+    recordPendingUpdateNotice(installedVersion);
     fs.rmSync(`${targetPath}.previous`, { force: true });
     fs.rmSync(markerPath, { force: true });
   } catch {
     // The marker is created only when the portable helper applies an update.
   }
+}
+
+function recordPendingUpdateNotice(version) {
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(String(version || ''))) return;
+  try {
+    fs.writeFileSync(
+      path.join(app.getPath('userData'), UPDATE_NOTICE_FILE),
+      `${JSON.stringify({ version }, null, 2)}\n`,
+      'utf8'
+    );
+  } catch (error) {
+    console.warn(`Could not save the update notice: ${error.message}`);
+  }
+}
+
+async function showUpdateReleaseNotice() {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.webContents.getURL() !== SERVER_URL) {
+    mainWindow.webContents.once('did-finish-load', showUpdateReleaseNotice);
+    return;
+  }
+
+  const noticePath = path.join(app.getPath('userData'), UPDATE_NOTICE_FILE);
+  let notice;
+  try {
+    notice = JSON.parse(fs.readFileSync(noticePath, 'utf8'));
+    fs.rmSync(noticePath, { force: true });
+  } catch {
+    return;
+  }
+  const version = String(notice?.version || '');
+  if (version !== app.getVersion()) return;
+
+  let releaseDescription = 'No release description was provided for this version.';
+  for (const tag of [version, `v${version}`]) {
+    try {
+      const response = await net.fetch(`${GITHUB_API_URL}/releases/tags/${encodeURIComponent(tag)}`, {
+        cache: 'no-store',
+        headers: { Accept: 'application/vnd.github+json', 'User-Agent': `HollowRun/${version}` },
+        signal: AbortSignal.timeout(10000)
+      });
+      if (!response.ok) continue;
+      const release = await response.json();
+      const body = String(release.body || '').trim();
+      if (body) releaseDescription = body.slice(0, 6000);
+      break;
+    } catch {
+      // The version notice remains useful even when GitHub is unavailable.
+    }
+  }
+
+  dialog.showMessageBox(mainWindow, {
+    type: 'info',
+    title: 'HollowRun Updated',
+    message: `HollowRun has been updated to v${version}.`,
+    detail: releaseDescription,
+    buttons: ['View release', 'Close'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true
+  }).then(({ response }) => {
+    if (response === 0) shell.openExternal(`${RELEASES_URL}/tag/${encodeURIComponent(version)}`);
+  }).catch(error => {
+    console.error(`Could not show the update notice: ${error.message}`);
+  });
 }
 
 function startUpdateCheck() {
@@ -819,6 +892,7 @@ app.whenReady().then(async () => {
     cleanupSuccessfulPortableUpdate();
     showPortableUpdateDownloadError();
     promptForDownloadedUpdate();
+    showUpdateReleaseNotice();
   } else {
     console.error('Backend server failed to start on port 3824 in time.');
     await showBackendStartupFailure();
@@ -849,8 +923,12 @@ app.on('window-all-closed', function () {
 
 app.on('before-quit', () => {
   isQuitting = true;
+  if (!isPortableBuild() && downloadedUpdateVersion) {
+    recordPendingUpdateNotice(downloadedUpdateVersion);
+  }
   if (isPortableBuild() && downloadedUpdateVersion && !portableUpdateHandoffStarted) {
     try {
+      recordPendingUpdateNotice(downloadedUpdateVersion);
       startPortableUpdateHandoff().catch((error) => {
         console.error(`Could not start the portable update helper on exit: ${error.message}`);
       });

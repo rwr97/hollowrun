@@ -5,7 +5,8 @@ const crypto = require('node:crypto');
 const { Readable, Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 
-const PORTABLE_MANIFEST_URL = 'https://github.com/lwkshy/hollowrun/releases/latest/download/portable-update.json';
+const PORTABLE_MANIFEST_URL = 'https://github.com/rwr97/hollowrun/releases/latest/download/portable-update.json';
+const GITHUB_RELEASE_API_URL = 'https://api.github.com/repos/rwr97/hollowrun/releases/latest';
 const MAX_MANIFEST_BYTES = 64 * 1024;
 const MAX_PORTABLE_UPDATE_SIZE = 1024 * 1024 * 1024;
 const ALLOWED_DOWNLOAD_HOSTS = new Set([
@@ -42,35 +43,50 @@ function compareVersions(leftVersion, rightVersion) {
 }
 
 function getPortableAssetUrl(version, file) {
-  return `https://github.com/lwkshy/hollowrun/releases/download/v${version}/${encodeURIComponent(file)}`;
+  return `https://github.com/rwr97/hollowrun/releases/latest/download/${encodeURIComponent(file)}`;
 }
 
 function validatePortableManifest(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value) || value.schemaVersion !== 1) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || ![1, 2].includes(value.schemaVersion)) {
     throw new Error('The portable update manifest has an unsupported format.');
   }
 
   const version = String(value.version || '');
   if (!parseVersion(version)) throw new Error('The portable update manifest has an invalid version.');
 
-  const file = `HollowRun ${version}.exe`;
-  if (value.file !== file) throw new Error('The portable update manifest has an invalid file name.');
+  const file = String(value.file || '');
+  if (!/^HollowRun(?:[ ._-])\d+\.\d+\.\d+\.exe$/i.test(file) || /setup/i.test(file)) {
+    throw new Error('The portable update manifest has an invalid file name.');
+  }
 
   const size = Number(value.size);
   if (!Number.isSafeInteger(size) || size <= 0 || size > MAX_PORTABLE_UPDATE_SIZE) {
     throw new Error('The portable update manifest has an invalid file size.');
   }
 
-  const sha512 = String(value.sha512 || '');
-  const decodedHash = Buffer.from(sha512, 'base64');
-  if (decodedHash.length !== 64 || decodedHash.toString('base64') !== sha512) {
-    throw new Error('The portable update manifest has an invalid SHA-512 checksum.');
+  const url = String(value.url || '');
+  validateGithubDownloadUrl(url);
+  if (value.schemaVersion === 1) {
+    const encodedFile = encodeURIComponent(file);
+    const expectedUrls = new Set([
+      `https://github.com/rwr97/hollowrun/releases/latest/download/${encodedFile}`,
+      `https://github.com/rwr97/hollowrun/releases/download/${version}/${encodedFile}`,
+      `https://github.com/rwr97/hollowrun/releases/download/v${version}/${encodedFile}`
+    ]);
+    if (!expectedUrls.has(url)) throw new Error('The portable update manifest has an invalid download URL.');
+    const sha512 = String(value.sha512 || '');
+    const decodedHash = Buffer.from(sha512, 'base64');
+    if (decodedHash.length !== 64 || decodedHash.toString('base64') !== sha512) {
+      throw new Error('The portable update manifest has an invalid SHA-512 checksum.');
+    }
+    return { schemaVersion: 1, version, file, size, sha512, hashAlgorithm: 'sha512', url };
   }
 
-  const url = getPortableAssetUrl(version, file);
-  if (value.url !== url) throw new Error('The portable update manifest has an invalid download URL.');
-
-  return { schemaVersion: 1, version, file, size, sha512, url };
+  const sha256 = String(value.sha256 || '').toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(sha256)) {
+    throw new Error('The portable update manifest has an invalid SHA-256 checksum.');
+  }
+  return { schemaVersion: 2, version, file, size, sha256, hashAlgorithm: 'sha256', url };
 }
 
 function validateGithubDownloadUrl(value) {
@@ -88,7 +104,36 @@ async function fetchLatestPortableUpdate(currentVersion, fetchImpl = globalThis.
     signal: AbortSignal.timeout(20000)
   });
   if (response.status === 404) {
-    return { status: 'unavailable', version: currentVersion };
+    const releaseResponse = await fetchImpl(GITHUB_RELEASE_API_URL, {
+      cache: 'no-store',
+      headers: { Accept: 'application/vnd.github+json', 'User-Agent': `HollowRun/${currentVersion}` },
+      signal: AbortSignal.timeout(20000)
+    });
+    if (releaseResponse.status === 404) return { status: 'unavailable', version: currentVersion };
+    if (!releaseResponse.ok) {
+      throw new Error(`Could not fetch the latest portable release (HTTP ${releaseResponse.status}).`);
+    }
+    const release = await releaseResponse.json();
+    const releaseVersion = String(release.tag_name || '').replace(/^v/i, '');
+    if (!parseVersion(releaseVersion)) throw new Error('The latest portable release has an invalid version.');
+    const asset = (release.assets || []).find(candidate => (
+      typeof candidate?.name === 'string'
+      && candidate.name.toLowerCase() === `hollowrun.${releaseVersion}.exe`.toLowerCase()
+    ));
+    const digest = String(asset?.digest || '');
+    if (!asset || !/^sha256:[0-9a-f]{64}$/i.test(digest)) {
+      return { status: 'unavailable', version: currentVersion };
+    }
+    const manifest = validatePortableManifest({
+      schemaVersion: 2,
+      version: releaseVersion,
+      file: asset.name,
+      size: asset.size,
+      sha256: digest.slice(7),
+      url: asset.browser_download_url
+    });
+    if (compareVersions(manifest.version, currentVersion) <= 0) return { status: 'current', version: currentVersion };
+    return { status: 'available', manifest };
   }
   if (!response.ok) {
     throw new Error(`Could not fetch the portable update manifest (HTTP ${response.status}).`);
@@ -128,11 +173,18 @@ async function sha512File(filePath) {
   return hash.digest('base64');
 }
 
+async function hashFile(filePath, manifest) {
+  if (manifest.hashAlgorithm === 'sha512') return sha512File(filePath);
+  const hash = crypto.createHash('sha256');
+  for await (const chunk of fs.createReadStream(filePath)) hash.update(chunk);
+  return hash.digest('hex');
+}
+
 async function verifyPortableUpdateFile(filePath, manifest) {
   try {
     const stat = await fsPromises.stat(filePath);
     if (!stat.isFile() || stat.size !== manifest.size) return false;
-    return await sha512File(filePath) === manifest.sha512;
+    return await hashFile(filePath, manifest) === (manifest.sha512 || manifest.sha256);
   } catch {
     return false;
   }
@@ -173,7 +225,7 @@ async function downloadPortableUpdate(manifest, userDataPath, fetchImpl = global
       throw new Error('The portable update size does not match its manifest.');
     }
 
-    const hash = crypto.createHash('sha512');
+    const hash = crypto.createHash(manifest.hashAlgorithm);
     let receivedBytes = 0;
     const verifyStream = new Transform({
       transform(chunk, _encoding, callback) {
@@ -193,8 +245,9 @@ async function downloadPortableUpdate(manifest, userDataPath, fetchImpl = global
       fs.createWriteStream(partialPath, { flags: 'wx' })
     );
 
-    if (receivedBytes !== manifest.size || hash.digest('base64') !== manifest.sha512) {
-      throw new Error('The portable update failed its SHA-512 integrity check.');
+    const digest = manifest.hashAlgorithm === 'sha512' ? hash.digest('base64') : hash.digest('hex');
+    if (receivedBytes !== manifest.size || digest !== (manifest.sha512 || manifest.sha256)) {
+      throw new Error(`The portable update failed its ${manifest.hashAlgorithm.toUpperCase()} integrity check.`);
     }
 
     await fsPromises.rm(paths.updateFilePath, { force: true });

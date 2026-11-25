@@ -13,9 +13,11 @@ async function hashFile(filePath) {
 
 exports.default = async function createPortableUpdateManifest(buildResult) {
   const version = String(packageJson.version || '');
-  const file = `HollowRun ${version}.exe`;
+  const artifactFile = `HollowRun ${version}.exe`;
+  const file = `HollowRun.${version}.exe`;
   const portablePath = buildResult.artifactPaths.find(
     artifactPath => path.basename(artifactPath) === file
+      || path.basename(artifactPath) === artifactFile
   );
   if (!portablePath) {
     throw new Error(`Could not find the portable executable for version ${version}.`);
@@ -28,7 +30,7 @@ exports.default = async function createPortableUpdateManifest(buildResult) {
     file,
     size: stat.size,
     sha512: await hashFile(portablePath),
-    url: `https://github.com/lwkshy/hollowrun/releases/download/v${version}/${encodeURIComponent(file)}`
+    url: `https://github.com/rwr97/hollowrun/releases/latest/download/${encodeURIComponent(file)}`
   };
   const manifestPath = path.join(buildResult.outDir, 'portable-update.json');
   fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');

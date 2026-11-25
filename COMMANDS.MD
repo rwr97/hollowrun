@@ -30,12 +30,12 @@ dist-electron\HollowRun Setup <version>.exe
 
 The NSIS installer and portable executable both check GitHub Releases for
 updates. The portable updater replaces the executable at its current location;
-the Settings release-page link remains available for manual downloads. Version
-2.0.5 is the first updater-enabled release and must be tagged before publishing:
+the Settings release-page link remains available for manual downloads. The
+current source version is 2.0.6 and should be tagged before publishing:
 
 ```powershell
 npm.cmd run version:patch
-git tag v2.0.5
+git tag 2.0.6
 ```
 
 Set `GH_TOKEN` in the release environment to a GitHub token that can create and

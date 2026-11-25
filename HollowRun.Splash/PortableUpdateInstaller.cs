@@ -57,7 +57,8 @@ internal static class PortableUpdateInstaller
         var stagedUpdatePath = Path.GetFullPath(Required("--staged-update"));
         var pendingFilePath = Path.GetFullPath(Required("--pending-file"));
         var markerFilePath = Path.GetFullPath(Required("--installed-marker"));
-        var sha512 = Required("--sha512");
+        var hashAlgorithm = Required("--hash-algorithm").ToLowerInvariant();
+        var checksum = Required("--checksum").ToLowerInvariant();
         var version = Required("--version");
 
         if (!Path.GetExtension(targetPath).Equals(".exe", StringComparison.OrdinalIgnoreCase))
@@ -66,7 +67,12 @@ internal static class PortableUpdateInstaller
         }
         if (!File.Exists(targetPath)) throw new FileNotFoundException("The portable executable was not found.", targetPath);
         if (!File.Exists(stagedUpdatePath)) throw new FileNotFoundException("The downloaded update was not found.", stagedUpdatePath);
-        if (sha512.Length != 88 || !Convert.TryFromBase64String(sha512, new byte[64], out var hashLength) || hashLength != 64)
+        if (hashAlgorithm is not ("sha256" or "sha512"))
+        {
+            throw new ArgumentException("The portable update hash algorithm is invalid.");
+        }
+        if ((hashAlgorithm == "sha256" && !System.Text.RegularExpressions.Regex.IsMatch(checksum, "^[0-9a-f]{64}$"))
+            || (hashAlgorithm == "sha512" && (checksum.Length != 88 || !Convert.TryFromBase64String(checksum, new byte[64], out var hashLength) || hashLength != 64)))
         {
             throw new ArgumentException("The portable update checksum is invalid.");
         }
@@ -78,7 +84,8 @@ internal static class PortableUpdateInstaller
             ["--staged-update"] = stagedUpdatePath,
             ["--pending-file"] = pendingFilePath,
             ["--installed-marker"] = markerFilePath,
-            ["--sha512"] = sha512,
+            ["--hash-algorithm"] = hashAlgorithm,
+            ["--checksum"] = checksum,
             ["--version"] = version
         };
     }
@@ -89,7 +96,8 @@ internal static class PortableUpdateInstaller
         var stagedUpdatePath = options["--staged-update"];
         var pendingFilePath = options["--pending-file"];
         var markerFilePath = options["--installed-marker"];
-        var expectedSha512 = options["--sha512"];
+        var hashAlgorithm = options["--hash-algorithm"];
+        var expectedChecksum = options["--checksum"];
         var version = options["--version"];
         var parentProcessId = int.Parse(options["--parent-process-id"]);
         var targetDirectory = Path.GetDirectoryName(targetPath)
@@ -100,15 +108,15 @@ internal static class PortableUpdateInstaller
 
         try
         {
-            if (!string.Equals(HashFile(stagedUpdatePath), expectedSha512, StringComparison.Ordinal))
+            if (!string.Equals(HashFile(stagedUpdatePath, hashAlgorithm), expectedChecksum, StringComparison.OrdinalIgnoreCase))
             {
-                throw new InvalidDataException("The downloaded portable executable failed its SHA-512 integrity check.");
+                throw new InvalidDataException($"The downloaded portable executable failed its {hashAlgorithm.ToUpperInvariant()} integrity check.");
             }
 
             File.Copy(stagedUpdatePath, replacementPath, overwrite: true);
-            if (!string.Equals(HashFile(replacementPath), expectedSha512, StringComparison.Ordinal))
+            if (!string.Equals(HashFile(replacementPath, hashAlgorithm), expectedChecksum, StringComparison.OrdinalIgnoreCase))
             {
-                throw new InvalidDataException("The copied portable executable failed its SHA-512 integrity check.");
+                throw new InvalidDataException($"The copied portable executable failed its {hashAlgorithm.ToUpperInvariant()} integrity check.");
             }
 
             WaitForParentProcess(parentProcessId);
@@ -235,10 +243,12 @@ internal static class PortableUpdateInstaller
         }
     }
 
-    private static string HashFile(string filePath)
+    private static string HashFile(string filePath, string algorithm)
     {
         using var stream = File.OpenRead(filePath);
-        return Convert.ToBase64String(SHA512.HashData(stream));
+        return algorithm == "sha256"
+            ? Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant()
+            : Convert.ToBase64String(SHA512.HashData(stream));
     }
 
     private static void TryDelete(string filePath)

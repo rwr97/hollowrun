@@ -54,8 +54,10 @@ finishes, HollowRun offers to restart and install it; otherwise it applies when
 HollowRun next closes. The portable build replaces its executable at the same
 location. Use **Settings → Updates → Check for updates** to check manually and
 see whether you are up to date. **View releases** remains available for manual
-downloads. Settings also includes a maintenance action that clears cached app
-data and restarts HollowRun while preserving preferences and local favorites.
+downloads. After an update, the next startup shows the new version and its
+GitHub release notes. Settings also includes a maintenance action that clears
+cached app data and restarts HollowRun while preserving preferences and local
+favorites.
 
 The first updater-enabled release is 2.0.5, which is newer than the previous
 2.0.4 release so existing installs can discover it.
@@ -81,4 +83,4 @@ See [CHANGELOG.md](CHANGELOG.md) for release history and pending changes.
 
 ## Release Download
 
-GitHub: [Releases](https://github.com/lwkshy/hollowrun/releases)
+GitHub: [Releases](https://github.com/rwr97/hollowrun/releases)
