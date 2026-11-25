@@ -112,6 +112,28 @@ ipcMain.handle('app:open-repository', () => shell.openExternal(GITHUB_REPOSITORY
 
 ipcMain.handle('app:open-releases', () => shell.openExternal(RELEASES_URL));
 
+ipcMain.handle('app:clear-cache-and-restart', async () => {
+  await session.defaultSession.clearCache();
+  await session.defaultSession.clearStorageData({
+    storages: ['appcache', 'cache', 'shadercache', 'serviceworkers']
+  });
+  const appCacheDirectory = path.join(app.getPath('userData'), 'cache');
+  await Promise.all([
+    fs.promises.rm(path.join(appCacheDirectory, 'game-info.json'), { force: true }),
+    fs.promises.rm(path.join(appCacheDirectory, 'owned-library.json'), { force: true })
+  ]);
+
+  const relaunchOptions = getPortableRelaunchOptions({
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    environment: process.env
+  });
+  if (relaunchOptions) app.relaunch(relaunchOptions);
+  else app.relaunch();
+  setImmediate(() => app.quit());
+  return true;
+});
+
 ipcMain.handle('app:check-for-updates', async () => {
   if (!app.isPackaged || process.platform !== 'win32') return { status: 'unsupported' };
   if (isPortableBuild()) return checkForPortableUpdate();

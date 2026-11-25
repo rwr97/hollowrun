@@ -1,4 +1,4 @@
-import { Bug, ExternalLink, RotateCw, Send, ShieldCheck } from 'lucide-react';
+import { Bug, Database, ExternalLink, RotateCw, Send, ShieldCheck } from 'lucide-react';
 
 export default function SettingsView({
   settings,
@@ -7,6 +7,7 @@ export default function SettingsView({
   onToggleReports,
   onRestart,
   onCheckForUpdates,
+  onClearCache,
   onTestReport,
   testReportsAvailable
 }) {
@@ -64,6 +65,32 @@ export default function SettingsView({
         )}
 
         <div className="settings-report-details">
+          <div className="settings-detail-title"><Bug size={15} /> What a report contains</div>
+          <p>
+            HollowRun sends the app version, Windows and runtime versions, the failing component,
+            the error, and its stack trace. Low-level crashes may include one native minidump per run.
+          </p>
+          <p>
+            HollowRun does not deliberately attach Steam identity or library data, custom status text,
+            request headers or bodies, cookies, screenshots, activity logs, or local variables. Native
+            minidumps can still contain fragments of process memory or local file paths.
+          </p>
+        </div>
+
+        {testReportsAvailable && (
+          <div className="settings-actions">
+            <button
+              type="button"
+              disabled={!active || restartRequired || isBusy}
+              title={!active ? 'Enable reporting and restart HollowRun first' : 'Send a test event to Sentry'}
+              onClick={onTestReport}
+            >
+              <Send size={14} /> {pendingAction === 'test' ? 'Sending...' : 'Send test report'}
+            </button>
+          </div>
+        )}
+
+        <div className="settings-report-details">
           <div className="settings-detail-title"><RotateCw size={15} /> Updates</div>
           <p>
             Installer and portable versions check for updates when HollowRun starts and download them in the background.
@@ -110,30 +137,18 @@ export default function SettingsView({
         )}
 
         <div className="settings-report-details">
-          <div className="settings-detail-title"><Bug size={15} /> What a report contains</div>
-          <p>
-            HollowRun sends the app version, Windows and runtime versions, the failing component,
-            the error, and its stack trace. Low-level crashes may include one native minidump per run.
-          </p>
-          <p>
-            HollowRun does not deliberately attach Steam identity or library data, custom status text,
-            request headers or bodies, cookies, screenshots, activity logs, or local variables. Native
-            minidumps can still contain fragments of process memory or local file paths.
-          </p>
-        </div>
-
-        {testReportsAvailable && (
+          <div className="settings-detail-title"><Database size={15} /> Maintenance</div>
+          <p>Clear HollowRun’s cached web data and local game metadata, then restart the app. Your settings and downloaded updates are kept.</p>
           <div className="settings-actions">
             <button
               type="button"
-              disabled={!active || restartRequired || isBusy}
-              title={!active ? 'Enable reporting and restart HollowRun first' : 'Send a test event to Sentry'}
-              onClick={onTestReport}
+              disabled={isBusy || !window.hollowrun?.clearCacheAndRestart}
+              onClick={onClearCache}
             >
-              <Send size={14} /> {pendingAction === 'test' ? 'Sending...' : 'Send test report'}
+              <Database size={14} /> {pendingAction === 'clear-cache' ? 'Clearing...' : 'Clear app cache and restart'}
             </button>
           </div>
-        )}
+        </div>
       </div>
     </section>
   );

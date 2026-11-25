@@ -2,11 +2,21 @@
 
 All notable user-facing changes to HollowRun are documented here.
 
-## Unreleased
+## 2.0.5 - 2026-11-25
 
 ### Added
 
 - Added launch-time update checks and background downloads for installer and portable builds, a manual Settings check with current-version feedback, a restart prompt, and a release-page link for manual downloads.
+- Added a Settings maintenance action to clear cached app data and restart HollowRun.
+
+### Changed
+
+- Reordered the Settings sections so privacy, updates, and maintenance controls are easier to follow.
+- Portable update checks treat a missing release manifest as an expected manual-download state instead of showing an error at launch.
+
+### Removed
+
+- Removed the Achievements watchlist, Watched tab, and right-click watch controls follwing a bug that was running games in redondence
 
 ## 2.0.4 - 2026-11-20
 
@@ -14,7 +24,6 @@ All notable user-facing changes to HollowRun are documented here.
 
 - Added the Achievement Manager, backed by the running Steam client, with per-game completion progress and achievement icons.
 - Added per-achievement and per-game bulk lock/unlock actions in Achievement Manager edit mode, including confirmations and an in-app ranking-site safety notice.
-- Added local achievement watchlists with All and Watched game tabs, search, and right-click watch toggling.
 - Added Favorite Games to the main navigation, with account-local favorites that can be toggled by right-clicking game cards.
 
 ## 2.0.3 - 2026-10-17

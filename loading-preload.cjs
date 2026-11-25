@@ -11,7 +11,8 @@ const hollowrunApi = {
   checkForUpdates: () => ipcRenderer.invoke('app:check-for-updates'),
   openReleasesPage: () => ipcRenderer.invoke('app:open-releases'),
   openRepositoryPage: () => ipcRenderer.invoke('app:open-repository'),
-  restart: () => ipcRenderer.invoke('app:restart')
+  restart: () => ipcRenderer.invoke('app:restart'),
+  clearCacheAndRestart: () => ipcRenderer.invoke('app:clear-cache-and-restart')
 };
 
 if (testReportsAvailable) {

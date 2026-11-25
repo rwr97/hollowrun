@@ -30,9 +30,8 @@ dist-electron\HollowRun Setup <version>.exe
 
 The NSIS installer and portable executable both check GitHub Releases for
 updates. The portable updater replaces the executable at its current location;
-the Settings release-page link remains available for manual downloads. Before
-the first updater-enabled release, bump the version above the existing 2.0.4
-release:
+the Settings release-page link remains available for manual downloads. Version
+2.0.5 is the first updater-enabled release and must be tagged before publishing:
 
 ```powershell
 npm.cmd run version:patch

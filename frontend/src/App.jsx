@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { 
   Gamepad2, CheckSquare, UserCircle, Activity, Clock, ListChecks, Zap, Hexagon, Search,
   Square, X, History, ListPlus, Play, CreditCard, ChevronUp, MessageSquareText,
-  RotateCw, Settings as SettingsIcon, Trophy, ShieldAlert, Pin, PinOff, LockKeyhole, LockOpen, Star
+  RotateCw, Settings as SettingsIcon, Trophy, ShieldAlert, LockKeyhole, LockOpen, Star
 } from 'lucide-react';
 import {
   formatDropsLeft,
@@ -34,7 +34,6 @@ const BULK_QUEUE_CARD_DROP_REFRESH_INTERVAL_MS = 120000;
 const RUNNING_CARD_DROP_CHECK_CONCURRENCY = 4;
 const MAX_CONCURRENT_CARD_GAMES = 32;
 const TASK_QUEUE_STORAGE_PREFIX = 'hollowrun.taskQueue';
-const ACHIEVEMENT_WATCHLIST_STORAGE_PREFIX = 'hollowrun.achievementWatchlist';
 const FAVORITE_GAMES_STORAGE_PREFIX = 'hollowrun.favoriteGames';
 
 async function requestJson(path, options) {
@@ -99,17 +98,6 @@ function readStoredTaskQueue(steamId) {
   }
 }
 
-function readAchievementWatchlist(steamId) {
-  try {
-    const stored = JSON.parse(localStorage.getItem(`${ACHIEVEMENT_WATCHLIST_STORAGE_PREFIX}.${steamId}`) || '[]');
-    return Array.from(new Set((Array.isArray(stored) ? stored : [])
-      .map(Number)
-      .filter(appId => Number.isSafeInteger(appId) && appId > 10)));
-  } catch {
-    return [];
-  }
-}
-
 function readFavoriteGames(steamId) {
   try {
     const stored = JSON.parse(localStorage.getItem(`${FAVORITE_GAMES_STORAGE_PREFIX}.${steamId}`) || '[]');
@@ -127,11 +115,9 @@ export default function App() {
   const [sessions, setSessions] = useState([]);
   const [activeTab, setActiveTab] = useState('installed');
   const [achievementSearchQuery, setAchievementSearchQuery] = useState('');
-  const [achievementPickerTab, setAchievementPickerTab] = useState('all');
   const [isAchievementEditMode, setIsAchievementEditMode] = useState(false);
   const [selectedAchievementGame, setSelectedAchievementGame] = useState(null);
   const [achievementSummary, setAchievementSummary] = useState({ status: 'idle', data: null });
-  const [achievementWatchlist, setAchievementWatchlist] = useState([]);
   const [favoriteGames, setFavoriteGames] = useState([]);
   const [achievementPendingId, setAchievementPendingId] = useState(null);
   const [achievementBulkPending, setAchievementBulkPending] = useState(false);
@@ -278,6 +264,19 @@ export default function App() {
     }
   };
 
+  const handleClearCache = async () => {
+    if (!window.hollowrun?.clearCacheAndRestart) return;
+    if (!window.confirm('Clear HollowRun’s cached data and restart now? Your settings will be kept.')) return;
+    setSettingsPendingAction('clear-cache');
+    setSettingsFeedback(null);
+    try {
+      await window.hollowrun.clearCacheAndRestart();
+    } catch (error) {
+      setSettingsFeedback({ type: 'error', text: `Could not clear the app cache: ${error.message}` });
+      setSettingsPendingAction(null);
+    }
+  };
+
   const handleCheckForUpdates = async () => {
     if (!window.hollowrun?.checkForUpdates) return;
     setSettingsPendingAction('update');
@@ -412,27 +411,12 @@ export default function App() {
   const activeSteamId = status?.activeUser?.steamId;
 
   useEffect(() => {
-    setAchievementWatchlist(/^7656\d{13}$/.test(String(activeSteamId || ''))
-      ? readAchievementWatchlist(activeSteamId)
-      : []);
     setFavoriteGames(/^7656\d{13}$/.test(String(activeSteamId || ''))
       ? readFavoriteGames(activeSteamId)
       : []);
     setSelectedAchievementGame(null);
     setAchievementSummary({ status: 'idle', data: null });
   }, [activeSteamId]);
-
-  useEffect(() => {
-    if (!activeSteamId) return;
-    try {
-      localStorage.setItem(
-        `${ACHIEVEMENT_WATCHLIST_STORAGE_PREFIX}.${activeSteamId}`,
-        JSON.stringify(achievementWatchlist)
-      );
-    } catch {
-      // The watchlist remains available for this session if storage is unavailable.
-    }
-  }, [achievementWatchlist, activeSteamId]);
 
   useEffect(() => {
     if (!activeSteamId) return;
@@ -453,12 +437,6 @@ export default function App() {
     } catch {
       setAchievementSummary({ status: 'unavailable', data: null });
     }
-  };
-
-  const toggleAchievementWatchlist = appId => {
-    setAchievementWatchlist(previous => previous.includes(appId)
-      ? previous.filter(id => id !== appId)
-      : [...previous, appId]);
   };
 
   const toggleFavoriteGame = appId => {
@@ -1292,9 +1270,7 @@ export default function App() {
       || String(game.appid || '').includes(normalizedAchievementQuery)
     ))
     : allGames;
-  const visibleAchievementGames = achievementPickerTab === 'watched'
-    ? achievementGames.filter(game => achievementWatchlist.includes(game.appid))
-    : achievementGames;
+  const visibleAchievementGames = achievementGames;
   const isSearching = !isSettingsView && !isAchievementsView && normalizedQuery.length > 0;
   const tabGames = activeTab === 'installed'
     ? allGames.filter(game => game.installed)
@@ -1691,7 +1667,7 @@ export default function App() {
               {isSettingsView ? (
                 <>Privacy, diagnostics, and application preferences</>
               ) : isAchievementsView ? (
-                <>Manage Steam achievements and keep a local watchlist.</>
+                <>Manage Steam achievements from your running Steam client.</>
               ) : isSearching ? (
                 <>{activeTab === 'cards' ? 'Within Games With Cards' : 'Across all game sections'} <span className="highlight">{isStoreSearchPending ? 'Checking Steam titles...' : `${filteredGames.length} games.`}</span></>
               ) : activeTab === 'cards' ? (
@@ -1720,6 +1696,7 @@ export default function App() {
             onToggleReports={handleToggleCrashReports}
             onRestart={handleRestartApp}
             onCheckForUpdates={handleCheckForUpdates}
+            onClearCache={handleClearCache}
             onTestReport={handleTestCrashReport}
             testReportsAvailable={window.hollowrun?.testReportsAvailable === true}
           />
@@ -1764,32 +1741,20 @@ export default function App() {
                 <div className="section-header">
                   <div className="section-title"><Trophy size={18} /> Choose a game <span className="badge">{visibleAchievementGames.length}</span></div>
                 </div>
-                <div className="achievement-picker-tabs" role="tablist" aria-label="Achievement game lists">
-                  <button type="button" role="tab" aria-selected={achievementPickerTab === 'all'} className={achievementPickerTab === 'all' ? 'active' : ''} onClick={() => setAchievementPickerTab('all')}>All</button>
-                  <button type="button" role="tab" aria-selected={achievementPickerTab === 'watched'} className={achievementPickerTab === 'watched' ? 'active' : ''} onClick={() => setAchievementPickerTab('watched')}><Pin size={12} /> Watched <span>{achievementWatchlist.length}</span></button>
-                </div>
-                <p className="achievement-watch-hint"><Pin size={12} /> Right-click a game to add or remove it from Watched.</p>
                 <div className="achievement-game-list">
                   {visibleAchievementGames.length === 0 && (
-                    <div className="achievement-no-results">{achievementPickerTab === 'watched' ? 'No watched games match this search.' : 'No games match this search.'}</div>
+                    <div className="achievement-no-results">No games match this search.</div>
                   )}
                   {visibleAchievementGames.map(game => {
-                    const pinned = achievementWatchlist.includes(game.appid);
                     return (
                       <button
                         type="button"
                         key={game.appid}
                         className={`achievement-game-row ${selectedAchievementGame?.appid === game.appid ? 'selected' : ''}`}
-                        title={`${pinned ? 'Remove from' : 'Add to'} watched games (right-click)`}
                         onClick={() => openAchievementGame(game)}
-                        onContextMenu={event => {
-                          event.preventDefault();
-                          toggleAchievementWatchlist(game.appid);
-                        }}
                       >
                         <GameIcon appId={game.appid} name={getDisplayGameName(game)} />
                         <span className="achievement-game-name">{getDisplayGameName(game)}</span>
-                        {pinned && <Pin size={14} className="achievement-pin" aria-label="On watchlist" />}
                       </button>
                     );
                   })}
@@ -1803,9 +1768,6 @@ export default function App() {
                   <>
                     <div className="achievement-detail-header">
                       <div><span className={`achievement-kicker ${isAchievementEditMode ? 'edit-mode' : ''}`}>{isAchievementEditMode ? 'Edit mode' : 'Steam client progress'}</span><h2>{getDisplayGameName(selectedAchievementGame)}</h2></div>
-                      <button type="button" className="achievement-watch-btn" onClick={() => toggleAchievementWatchlist(selectedAchievementGame.appid)}>
-                        {achievementWatchlist.includes(selectedAchievementGame.appid) ? <><PinOff size={15} /> Remove watch</> : <><Pin size={15} /> Watch game</>}
-                      </button>
                     </div>
                     {isAchievementEditMode && achievementSummary.status === 'ready' && (
                       <div className="achievement-bulk-actions">
