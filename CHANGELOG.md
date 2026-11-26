@@ -2,6 +2,12 @@
 
 All notable user-facing changes to HollowRun are documented here.
 
+## 2.0.7 - 2026-11-26
+
+### Fixed
+
+- Restored Counter-Strike 2 in Achievement Manager when Steam local metadata reports its internal `appid_730` placeholder instead of the game title.
+
 ## 2.0.6 - 2026-11-25
 
 ### Fixed
