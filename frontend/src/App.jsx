@@ -1331,7 +1331,16 @@ export default function App() {
     .slice(neighbourStart, neighbourEnd)
     .filter(game => !game.metadataReady && !currentMetadataAppIdSet.has(game.appid))
     .map(game => game.appid);
-  const currentMetadataKey = currentMetadataAppIds.join(',');
+  // The achievement picker is not paginated, so repair local placeholder
+  // names here as well. This is deliberately bounded to avoid turning an
+  // achievement visit into a full-library Store API scan.
+  const achievementMetadataAppIds = isAchievementsView
+    ? allGames
+      .filter(game => !game.metadataReady && !currentMetadataAppIdSet.has(game.appid))
+      .slice(0, 24)
+      .map(game => game.appid)
+    : [];
+  const currentMetadataKey = [...new Set([...currentMetadataAppIds, ...achievementMetadataAppIds])].join(',');
   const neighbourMetadataKey = neighbourMetadataAppIds.join(',');
 
   useEffect(() => {

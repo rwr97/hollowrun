@@ -43,7 +43,10 @@ export function getLastPlayedTime(game) {
 
 export function hasPlaceholderGameName(game) {
   const name = String(game?.name || '').trim();
-  return !name || /^Steam App\s+\d+$/i.test(name);
+  const appId = Number(game?.appid);
+  return !name || /^Steam App\s+\d+$/i.test(name)
+    || (Number.isInteger(appId)
+      && new RegExp(`^(?:steam[\\s_-]*)?app[\\s_-]*id[\\s_-]*${appId}$`, 'i').test(name));
 }
 
 export function getDisplayGameName(game) {

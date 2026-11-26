@@ -4,7 +4,7 @@ import path from 'path';
 import { spawn, execFileSync } from 'child_process';
 import { createHash } from 'crypto';
 import { fileURLToPath } from 'url';
-import { MAX_IDLE_SESSIONS, normalizeGameName, parseAppId, parseIdleAppId } from './validation.js';
+import { MAX_IDLE_SESSIONS, isPlaceholderGameName, normalizeGameName, parseAppId, parseIdleAppId } from './validation.js';
 import { parseCardDropCountWorkerOutput, parseCardDropWorkerOutput } from './card-drops.js';
 import jsonStorage from '../json-storage.cjs';
 import { normalizeCustomPresence } from './presence.js';
@@ -625,6 +625,7 @@ function sendBufferWithRange(req, res, asset) {
 function hasFreshGameInfo(info) {
   const cachedAt = Number(info?._cachedAt);
   return info?._cacheVersion === GAME_INFO_CACHE_VERSION
+    && !isPlaceholderGameName(info?.name, info?.appid)
     && Number.isFinite(cachedAt)
     && (Date.now() - cachedAt) < CACHE_MAX_AGE_MS;
 }
@@ -1610,7 +1611,7 @@ async function scanFullLibrary(steamPath, { allowStaleOwnership = false } = {}) 
               const appId = parseInt(kv.appid, 10);
               if (isLibraryCandidate(appId) && kv.name !== 'Steamworks Common Redistributables') {
                 installedManifests.set(appId, {
-                  name: kv.name,
+                  name: normalizeGameName(kv.name, appId),
                   installdir: kv.installdir || '',
                   sizeBytes: parseInt(kv.SizeOnDisk || '0', 10)
                 });
@@ -1650,12 +1651,16 @@ async function scanFullLibrary(steamPath, { allowStaleOwnership = false } = {}) 
     const manifest = installedManifests.get(appId);
     const playtime = playtimeMap.get(appId) || { playtimeMinutes: 0, lastPlayed: 0 };
     const cachedInfo = gameInfoCache[appId];
+    const manifestName = manifest?.name;
     const localAppInfoName = localAppInfoNames.get(appId);
+    const cachedName = cachedInfo?.name;
     const hasHistory = playtime.playtimeMinutes > 0 || playtime.lastPlayed > 0;
+    const name = [manifestName, localAppInfoName, cachedName]
+      .find(candidate => !isPlaceholderGameName(candidate, appId)) || `Steam App ${appId}`;
 
     gamesMap.set(appId, {
       appid: appId,
-      name: manifest?.name || localAppInfoName || cachedInfo?.name || `Steam App ${appId}`,
+      name,
       ...(manifest ? {
         installdir: manifest.installdir,
         sizeBytes: manifest.sizeBytes
@@ -1669,7 +1674,11 @@ async function scanFullLibrary(steamPath, { allowStaleOwnership = false } = {}) 
         : null,
       headerImage: cachedInfo?.headerImage || getDefaultHeaderImage(appId),
       capsuleImage: cachedInfo?.capsuleImage || null,
-      metadataReady: Boolean(manifest?.name || localAppInfoName || hasFreshGameInfo(cachedInfo))
+      metadataReady: Boolean(
+        !isPlaceholderGameName(manifestName, appId)
+        || !isPlaceholderGameName(localAppInfoName, appId)
+        || hasFreshGameInfo(cachedInfo)
+      )
     });
   }
 
