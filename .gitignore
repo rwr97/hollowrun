@@ -73,6 +73,7 @@ CRASH_REPORTING.md
 *.spec.ts
 *.spec.tsx
 *.spec.jsx
+!backend/worker-path.test.js
 test/
 tests/
 __tests__/

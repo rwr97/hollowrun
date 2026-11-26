@@ -12,8 +12,12 @@ import {
   createIdleWorkerEnvironment,
   createSteamHelperEnvironment
 } from './worker-environment.js';
-import { copyFileIfChanged } from './worker-files.js';
-import { findWorkerExecutablePath, getIdleWorkerDirectory } from './worker-path.js';
+import {
+  findWorkerExecutablePath,
+  getWorkerDirectory,
+  getIdleWorkerDirectory,
+  prepareWorkerExecutablePath
+} from './worker-path.js';
 import {
   clearSteamLaunchWatcher,
   configureAndRunGhostShortcut,
@@ -1465,7 +1469,10 @@ function getOwnershipFingerprint(steamPath, steamId, candidateIds) {
 
 function requestOwnedAppIdsFromWorker(candidateIds, expectedSteamId) {
   return new Promise(resolve => {
-    const workerExe = getWorkerExecutablePath();
+    const workerExe = getPreparedWorkerExecutablePath(
+      getWorkerDirectory(USER_DATA_DIRECTORY, 'owned-library'),
+      'owned-library'
+    );
     if (!workerExe) return resolve(null);
 
     let child;
@@ -1692,9 +1699,24 @@ function getWorkerExecutablePath() {
   return findWorkerExecutablePath(__dirname);
 }
 
+function getPreparedWorkerExecutablePath(workerDirectory, workerLabel) {
+  const workerExe = getWorkerExecutablePath();
+  if (!workerExe) return null;
+
+  try {
+    return prepareWorkerExecutablePath(workerExe, workerDirectory);
+  } catch (error) {
+    console.error(`[Worker ${workerLabel}] Failed to prepare isolated worker:`, error);
+    return null;
+  }
+}
+
 function requestCardDropsFromWorker(expectedSteamId, onProgress = () => {}) {
   return new Promise(resolve => {
-    const workerExe = getWorkerExecutablePath();
+    const workerExe = getPreparedWorkerExecutablePath(
+      getWorkerDirectory(USER_DATA_DIRECTORY, 'card-drop-scan'),
+      'card-drop-scan'
+    );
     if (!workerExe) return resolve({ success: false, reason: 'unavailable' });
 
     let child;
@@ -1753,7 +1775,10 @@ function requestCardDropsFromWorker(expectedSteamId, onProgress = () => {}) {
 
 function requestCardDropCountFromWorker(expectedSteamId, appId) {
   return new Promise(resolve => {
-    const workerExe = getWorkerExecutablePath();
+    const workerExe = getPreparedWorkerExecutablePath(
+      getIdleWorkerDirectory(USER_DATA_DIRECTORY, appId),
+      appId
+    );
     if (!workerExe) return resolve({ success: false, reason: 'unavailable' });
 
     let child;
@@ -1800,7 +1825,10 @@ function requestCardDropCountFromWorker(expectedSteamId, appId) {
 
 function requestAchievementSummaryFromWorker(expectedSteamId, appId) {
   return new Promise(resolve => {
-    const workerExe = getWorkerExecutablePath();
+    const workerExe = getPreparedWorkerExecutablePath(
+      getIdleWorkerDirectory(USER_DATA_DIRECTORY, appId),
+      appId
+    );
     if (!workerExe) return resolve({ success: false, reason: 'unavailable' });
     let child;
     try {
@@ -1868,7 +1896,10 @@ function requestAchievementSummaryFromWorker(expectedSteamId, appId) {
 
 function updateAchievementFromWorker(expectedSteamId, appId, achievementId, action) {
   return new Promise(resolve => {
-    const workerExe = getWorkerExecutablePath();
+    const workerExe = getPreparedWorkerExecutablePath(
+      getIdleWorkerDirectory(USER_DATA_DIRECTORY, appId),
+      appId
+    );
     if (!workerExe) return resolve({ success: false, reason: 'unavailable' });
     let child;
     try {
@@ -1918,7 +1949,10 @@ function updateAchievementFromWorker(expectedSteamId, appId, achievementId, acti
 
 function updateAllAchievementsFromWorker(expectedSteamId, appId, action) {
   return new Promise(resolve => {
-    const workerExe = getWorkerExecutablePath();
+    const workerExe = getPreparedWorkerExecutablePath(
+      getIdleWorkerDirectory(USER_DATA_DIRECTORY, appId),
+      appId
+    );
     if (!workerExe) return resolve({ success: false, reason: 'unavailable' });
     let child;
     try {
@@ -1968,7 +2002,10 @@ function updateAllAchievementsFromWorker(expectedSteamId, appId, action) {
 
 function requestAchievementIconFromWorker(expectedSteamId, appId, achievementId) {
   return new Promise(resolve => {
-    const workerExe = getWorkerExecutablePath();
+    const workerExe = getPreparedWorkerExecutablePath(
+      getIdleWorkerDirectory(USER_DATA_DIRECTORY, appId),
+      appId
+    );
     if (!workerExe) return resolve(null);
     let child;
     try {
@@ -2086,35 +2123,14 @@ function startIdleSession(appId, gameName = '') {
       return resolve({ success: false, error: 'HollowRun worker files are missing. Rebuild HollowRun so the worker is published and packaged with the app.' });
     }
 
-    const workerDir = getIdleWorkerDirectory(USER_DATA_DIRECTORY, appId);
-    const exeDir = path.dirname(workerExe);
-    const workerExecutableName = path.basename(workerExe);
-    const workerBaseName = path.basename(workerExe, path.extname(workerExe));
-    const workerFiles = [
-      workerExecutableName,
-      `${workerBaseName}.dll`,
-      `${workerBaseName}.deps.json`,
-      `${workerBaseName}.runtimeconfig.json`,
-      'Facepunch.Steamworks.Win64.dll',
-      'steam_api64.dll'
-    ];
-
-    try {
-      fs.mkdirSync(workerDir, { recursive: true });
-      for (const fileName of workerFiles) {
-        const sourceFile = path.join(exeDir, fileName);
-        if (fs.existsSync(sourceFile)) {
-          copyFileIfChanged(sourceFile, path.join(workerDir, fileName));
-        }
-      }
-    } catch (error) {
-      return resolve({ success: false, error: `Failed to prepare the Steam worker: ${error.message}` });
+    const runtimeWorkerExe = getPreparedWorkerExecutablePath(
+      getIdleWorkerDirectory(USER_DATA_DIRECTORY, appId),
+      appId
+    );
+    if (!runtimeWorkerExe || !fs.existsSync(runtimeWorkerExe)) {
+      return resolve({ success: false, error: 'Failed to prepare the Steam worker.' });
     }
-
-    const runtimeWorkerExe = path.join(workerDir, workerExecutableName);
-    if (!fs.existsSync(runtimeWorkerExe)) {
-      return resolve({ success: false, error: 'The prepared Steam worker executable is missing.' });
-    }
+    const workerDir = path.dirname(runtimeWorkerExe);
 
     let child;
     try {

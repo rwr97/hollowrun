@@ -427,15 +427,31 @@ export default function App() {
     }
   }, [favoriteGames, activeSteamId]);
 
-  const openAchievementGame = async game => {
-    if (!game) return;
-    setSelectedAchievementGame(game);
+  const loadAchievementSummary = async game => {
     setAchievementSummary({ status: 'loading', data: null });
     try {
       const result = await requestJson(`/achievements/${game.appid}`);
       setAchievementSummary({ status: 'ready', data: result });
     } catch {
       setAchievementSummary({ status: 'unavailable', data: null });
+    }
+  };
+
+  const openAchievementGame = async game => {
+    if (!game) return;
+    setSelectedAchievementGame(game);
+    if (!isAchievementEditMode) {
+      setAchievementSummary({ status: 'idle', data: null });
+      return;
+    }
+    await loadAchievementSummary(game);
+  };
+
+  const handleAchievementEditModeToggle = () => {
+    const enteringEditMode = !isAchievementEditMode;
+    setIsAchievementEditMode(enteringEditMode);
+    if (enteringEditMode && selectedAchievementGame) {
+      loadAchievementSummary(selectedAchievementGame);
     }
   };
 
@@ -1720,7 +1736,7 @@ export default function App() {
               <button
                 type="button"
                 className={`achievement-edit-mode-btn ${isAchievementEditMode ? 'active' : ''}`}
-                onClick={() => setIsAchievementEditMode(previous => !previous)}
+                onClick={handleAchievementEditModeToggle}
                 aria-pressed={isAchievementEditMode}
               >
                 {isAchievementEditMode ? 'Exit edit mode' : 'Enter edit mode'}
@@ -1772,7 +1788,7 @@ export default function App() {
 
               <section className="achievement-detail" aria-live="polite">
                 {!selectedAchievementGame ? (
-                  <div className="achievement-placeholder"><Trophy size={30} /><strong>Select a game</strong><span>HollowRun will read achievement progress from the running Steam client.</span></div>
+                  <div className="achievement-placeholder"><Trophy size={30} /><strong>Select a game</strong><span>Live achievement progress loads when you enter edit mode.</span></div>
                 ) : (
                   <>
                     <div className="achievement-detail-header">
@@ -1785,7 +1801,10 @@ export default function App() {
                         <button type="button" className="achievement-state-btn lock" disabled={achievementBulkPending || achievementPendingId !== null} onClick={() => handleAllAchievementStates('lock')}><LockKeyhole size={14} /> {achievementBulkPending ? 'Applying…' : 'Lock all'}</button>
                       </div>
                     )}
-                    {achievementSummary.status === 'loading' && <div className="achievement-loading">Reading achievement progress from Steam Community…</div>}
+                    {achievementSummary.status === 'idle' && (
+                      <div className="achievement-unavailable">Enter edit mode to load live progress. Steam may briefly show this game as playing while progress is loaded.</div>
+                    )}
+                    {achievementSummary.status === 'loading' && <div className="achievement-loading">Reading achievement progress from Steam…</div>}
                     {achievementSummary.status === 'ready' && (
                       <>
                         <div className="achievement-progress-card">

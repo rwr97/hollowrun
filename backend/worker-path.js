@@ -1,5 +1,15 @@
 import fs from 'fs';
 import path from 'path';
+import { copyFileIfChanged } from './worker-files.js';
+
+const WORKER_FILES = [
+  'HollowRun.Worker.exe',
+  'HollowRun.Worker.dll',
+  'HollowRun.Worker.deps.json',
+  'HollowRun.Worker.runtimeconfig.json',
+  'Facepunch.Steamworks.Win64.dll',
+  'steam_api64.dll'
+];
 
 export function resolveAsarUnpackedPath(filePath) {
   const asarSegment = `${path.sep}app.asar${path.sep}`;
@@ -46,5 +56,25 @@ export function findWorkerExecutablePath(baseDirectory, existsSync = fs.existsSy
 }
 
 export function getIdleWorkerDirectory(userDataDirectory, appId) {
-  return path.join(userDataDirectory, 'workers', `app_${appId}`);
+  return getWorkerDirectory(userDataDirectory, `app_${appId}`);
+}
+
+export function getWorkerDirectory(userDataDirectory, workerDirectoryName) {
+  return path.join(userDataDirectory, 'workers', workerDirectoryName);
+}
+
+export function prepareWorkerExecutablePath(workerExecutablePath, workerDirectory) {
+  if (!workerExecutablePath) return null;
+
+  fs.mkdirSync(workerDirectory, { recursive: true });
+
+  for (const fileName of WORKER_FILES) {
+    const sourcePath = path.join(path.dirname(workerExecutablePath), fileName);
+    if (fs.existsSync(sourcePath)) {
+      copyFileIfChanged(sourcePath, path.join(workerDirectory, fileName));
+    }
+  }
+
+  const preparedExecutablePath = path.join(workerDirectory, path.basename(workerExecutablePath));
+  return fs.existsSync(preparedExecutablePath) ? preparedExecutablePath : null;
 }
